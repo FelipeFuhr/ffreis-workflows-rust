@@ -1,0 +1,67 @@
+name: Rust Container Build
+
+on:
+  workflow_call:
+    inputs:
+      image-name:
+        description: "Name (and optional tag) for the built container image"
+        type: string
+        required: true
+      containerfile:
+        description: "Path to the Containerfile (or Dockerfile) relative to context"
+        type: string
+        default: "Containerfile"
+      context:
+        description: "Build context path"
+        type: string
+        default: "."
+      build-args:
+        description: "Extra --build-arg flags passed to the container build command"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  container:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Detect container runtime
+        id: runtime
+        run: |
+          set -euo pipefail
+          if command -v podman &>/dev/null; then
+            echo "tool=podman" >> "$GITHUB_OUTPUT"
+          elif command -v docker &>/dev/null; then
+            echo "tool=docker" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Neither podman nor docker found on this runner."
+            exit 1
+          fi
+          echo "Container runtime: $(cat "$GITHUB_OUTPUT" | grep tool | cut -d= -f2)"
+
+      - name: Build container image
+        run: |
+          set -euo pipefail
+          TOOL="${{ steps.runtime.outputs.tool }}"
+          BUILD_ARGS="${{ inputs.build-args }}"
+          "$TOOL" build \
+            --file "${{ inputs.context }}/${{ inputs.containerfile }}" \
+            --tag "${{ inputs.image-name }}" \
+            ${BUILD_ARGS} \
+            "${{ inputs.context }}"
+
+      - name: Smoke-test container image
+        run: |
+          set -euo pipefail
+          TOOL="${{ steps.runtime.outputs.tool }}"
+          echo "Verifying image '${{ inputs.image-name }}' exists locally..."
+          "$TOOL" image inspect "${{ inputs.image-name }}" > /dev/null
+          echo "Image smoke-test passed."

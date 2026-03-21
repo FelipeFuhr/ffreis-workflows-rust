@@ -1,0 +1,107 @@
+name: Rust Coverage (cargo-llvm-cov + Codecov)
+
+on:
+  workflow_call:
+    inputs:
+      toolchain:
+        description: "Rust toolchain to use (must support llvm-tools-preview component)"
+        type: string
+        default: "stable"
+      working-directory:
+        description: "Directory containing the Cargo workspace"
+        type: string
+        default: "."
+      coverage-args:
+        description: "Arguments passed to cargo llvm-cov"
+        type: string
+        default: "--all-features --workspace --lcov --output-path lcov.info"
+      coverage-threshold:
+        description: "Minimum line coverage percentage. 0 = no gate."
+        type: number
+        default: 0
+      codecov-flags:
+        description: "Flags passed to the Codecov upload"
+        type: string
+        default: "unit"
+    secrets:
+      CODECOV_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: ${{ inputs.toolchain }}
+          components: llvm-tools-preview
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
+        with:
+          workspaces: "${{ inputs.working-directory }} -> target"
+
+      - name: Install cargo-llvm-cov
+        run: |
+          set -euo pipefail
+          cargo install cargo-llvm-cov --locked
+
+      - name: Generate coverage report
+        run: |
+          set -euo pipefail
+          cargo llvm-cov ${{ inputs.coverage-args }}
+
+      - name: Enforce coverage threshold
+        if: ${{ inputs.coverage-threshold > 0 }}
+        run: |
+          set -euo pipefail
+          THRESHOLD=${{ inputs.coverage-threshold }}
+          # Parse line coverage percentage from lcov.info summary
+          COVERED=$(grep -E "^DA:" lcov.info | grep -v ",0$" | wc -l)
+          TOTAL=$(grep -E "^DA:" lcov.info | wc -l)
+          if [[ "$TOTAL" -eq 0 ]]; then
+            echo "::error::No coverage data found in lcov.info"
+            exit 1
+          fi
+          PCT=$(awk "BEGIN { printf \"%.1f\", ($COVERED / $TOTAL) * 100 }")
+          echo "Line coverage: ${PCT}% (threshold: ${THRESHOLD}%)"
+          awk "BEGIN { exit (${PCT} < ${THRESHOLD}) ? 1 : 0 }" || {
+            echo "::error::Coverage ${PCT}% is below the required threshold of ${THRESHOLD}%"
+            exit 1
+          }
+
+      - name: Check Codecov token availability
+        id: codecov_gate
+        run: |
+          set -euo pipefail
+          if [[ -z "${{ secrets.CODECOV_TOKEN }}" ]]; then
+            if [[ "${{ github.event_name }}" == "push" ]]; then
+              echo "::error::CODECOV_TOKEN secret is required for push coverage uploads."
+              exit 1
+            fi
+            echo "CODECOV_TOKEN not available (likely fork PR); skipping upload."
+            echo "skip_upload=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip_upload=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload coverage to Codecov
+        if: steps.codecov_gate.outputs.skip_upload != 'true'
+        uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: lcov.info
+          flags: ${{ inputs.codecov-flags }}
+          fail_ci_if_error: true
+          verbose: true

@@ -1,0 +1,53 @@
+name: Rust Miri (Undefined Behavior Detection)
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: "Directory containing the Cargo workspace"
+        type: string
+        default: "."
+      miri-args:
+        description: "Extra arguments passed to cargo miri test"
+        type: string
+        default: "--all-features"
+      timeout-minutes:
+        description: "Job timeout in minutes"
+        type: number
+        default: 60
+
+permissions:
+  contents: read
+
+jobs:
+  miri:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust (nightly + miri)
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: nightly
+          components: miri
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
+        with:
+          workspaces: "${{ inputs.working-directory }} -> target"
+
+      - name: Set up Miri
+        run: |
+          set -euo pipefail
+          cargo miri setup
+
+      - name: Run Miri tests
+        run: |
+          set -euo pipefail
+          cargo miri test ${{ inputs.miri-args }}
