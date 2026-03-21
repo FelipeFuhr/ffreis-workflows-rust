@@ -1,0 +1,80 @@
+name: Self Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Validates that every workflow defined in this library functions correctly
+# against the minimal example app in examples/hello/.
+#
+# rust-coverage uploads to Codecov only when CODECOV_TOKEN is set;
+# when absent the upload step is silently skipped — the coverage run still
+# executes and validates the workflow logic.
+#
+# rust-miri uses --lib to avoid compiling the Criterion benchmark harness
+# under Miri (Criterion uses features incompatible with the Miri interpreter).
+
+jobs:
+  fmt:
+    uses: ./.github/workflows/rust-fmt.yml
+    with:
+      working-directory: examples/hello
+
+  lint:
+    uses: ./.github/workflows/rust-lint.yml
+    with:
+      working-directory: examples/hello
+
+  test:
+    uses: ./.github/workflows/rust-test.yml
+    with:
+      working-directory: examples/hello
+
+  build:
+    uses: ./.github/workflows/rust-build.yml
+    with:
+      working-directory: examples/hello
+
+  docs:
+    uses: ./.github/workflows/rust-docs.yml
+    with:
+      working-directory: examples/hello
+
+  security:
+    uses: ./.github/workflows/rust-security.yml
+    with:
+      working-directory: examples/hello
+
+  deny:
+    uses: ./.github/workflows/rust-deny.yml
+    with:
+      working-directory: examples/hello
+
+  coverage:
+    uses: ./.github/workflows/rust-coverage.yml
+    with:
+      working-directory: examples/hello
+
+  bench:
+    uses: ./.github/workflows/rust-bench.yml
+    with:
+      working-directory: examples/hello
+
+  msrv:
+    uses: ./.github/workflows/rust-msrv.yml
+    with:
+      msrv: "1.80.0"
+      working-directory: examples/hello
+
+  miri:
+    uses: ./.github/workflows/rust-miri.yml
+    with:
+      working-directory: examples/hello
+      miri-args: --lib
+
+  container:
+    uses: ./.github/workflows/rust-container.yml
+    with:
+      image-name: hello-example

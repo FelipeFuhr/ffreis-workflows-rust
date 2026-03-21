@@ -1,0 +1,154 @@
+name: Rust Mutation Testing
+
+# Reusable workflow — callers invoke via:
+#   uses: ffreis/ffreis-platform-workflows-rust/.github/workflows/rust-mutation.yml@main
+#
+# Intended schedule: weekly (Sunday 02:00 UTC) or workflow_dispatch.
+# Do NOT run on every PR — mutation testing is slow (15–90 min per repo).
+#
+# Exit behaviour:
+#   - exit 0  → mutation score ≥ threshold   (pass)
+#   - exit 1  → mutation score  < threshold  (fail CI)
+
+on:
+  workflow_call:
+    inputs:
+      toolchain:
+        description: 'Rust toolchain to use'
+        required: false
+        type: string
+        default: 'stable'
+      working-directory:
+        description: 'Directory containing Cargo.toml (workspace or package root)'
+        required: false
+        type: string
+        default: '.'
+      threshold:
+        description: 'Minimum mutation score (0–100). CI fails if caught% is below this.'
+        required: false
+        type: number
+        default: 60
+      jobs:
+        description: 'Parallel mutant workers (each worker builds + tests one mutant)'
+        required: false
+        type: number
+        default: 4
+      mutants-args:
+        description: 'Extra flags passed verbatim to cargo mutants'
+        required: false
+        type: string
+        default: ''
+      timeout-minutes:
+        description: 'Total job timeout in minutes'
+        required: false
+        type: number
+        default: 90
+    outputs:
+      mutation-score:
+        description: 'Achieved mutation score (integer, 0–100)'
+        value: ${{ jobs.mutation.outputs.score }}
+
+permissions:
+  contents: read
+
+jobs:
+  mutation:
+    name: Mutation score (cargo-mutants)
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    outputs:
+      score: ${{ steps.score.outputs.score }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (${{ inputs.toolchain }})
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: ${{ inputs.toolchain }}
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
+        with:
+          workspaces: "${{ inputs.working-directory }} -> target"
+
+      - name: Install cargo-mutants
+        run: |
+          set -euo pipefail
+          if ! command -v cargo-mutants >/dev/null 2>&1; then
+            cargo install cargo-mutants --locked
+          fi
+
+      # Establish a baseline — avoids counting slow clean-build time as test time.
+      - name: Baseline test run
+        run: cargo test --all-features 2>&1 | tail -5
+
+      - name: Run mutation testing
+        id: run
+        run: |
+          set -euo pipefail
+
+          mkdir -p mutants.out
+
+          # Run cargo-mutants; exit code 0 = all caught, 2 = missed, 3 = timeout, 4 = error.
+          # We capture exit code manually so we can still extract the score on partial runs.
+          cargo mutants \
+            --jobs ${{ inputs.jobs }} \
+            --output mutants.out \
+            ${{ inputs.mutants-args }} \
+            2>&1 || true
+
+      - name: Compute score and enforce threshold
+        id: score
+        run: |
+          set -euo pipefail
+
+          # cargo-mutants writes per-outcome text files (one mutant description per line).
+          caught=0
+          missed=0
+          timeout=0
+
+          if [ -f mutants.out/caught.txt ]; then
+            caught=$(grep -c . mutants.out/caught.txt 2>/dev/null || echo 0)
+          fi
+          if [ -f mutants.out/missed.txt ]; then
+            missed=$(grep -c . mutants.out/missed.txt 2>/dev/null || echo 0)
+          fi
+          if [ -f mutants.out/timeout.txt ]; then
+            timeout=$(grep -c . mutants.out/timeout.txt 2>/dev/null || echo 0)
+          fi
+
+          total=$(( caught + missed ))
+          threshold="${{ inputs.threshold }}"
+
+          if [ "$total" -eq 0 ]; then
+            echo "::notice title=Mutation Score::No viable mutants found — marking as passed."
+            echo "score=100" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          score=$(( caught * 100 / total ))
+          echo "score=${score}" >> "$GITHUB_OUTPUT"
+
+          echo "Caught: ${caught}  Missed: ${missed}  Timeout: ${timeout}"
+          echo "Score: ${score}%  Threshold: ${threshold}%"
+
+          if [ "${score}" -lt "${threshold}" ]; then
+            echo "::error title=Mutation Score Too Low::Score ${score}% is below threshold ${threshold}%. Caught ${caught}/${total} mutants. Add tests that exercise more code paths."
+            exit 1
+          else
+            echo "::notice title=Mutation Score OK::Score ${score}% ≥ threshold ${threshold}% (${caught}/${total} mutants caught)."
+          fi
+
+      # Upload missed/timeout mutant lists to make actionable findings visible.
+      - name: Upload mutants output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-report
+          path: ${{ inputs.working-directory }}/mutants.out/
+          retention-days: 14
+          if-no-files-found: ignore

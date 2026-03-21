@@ -1,0 +1,47 @@
+name: Rust Deny (cargo-deny)
+
+# NOTE: The calling repository must have a deny.toml file at its root (or at
+# the working-directory root if a non-default working-directory is supplied).
+# cargo-deny will fail with a configuration error if deny.toml is absent.
+# See https://embarkstudios.github.io/cargo-deny/ for configuration guidance.
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: "Directory containing the Cargo workspace and deny.toml"
+        type: string
+        default: "."
+      checks:
+        description: "Space-separated list of cargo-deny checks to run"
+        type: string
+        default: "advisories bans licenses sources"
+
+permissions:
+  contents: read
+
+jobs:
+  deny:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust (minimal profile)
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: stable
+
+      - name: Install cargo-deny
+        run: |
+          set -euo pipefail
+          cargo install cargo-deny --locked
+
+      - name: Run cargo deny
+        run: |
+          set -euo pipefail
+          cargo deny check ${{ inputs.checks }}
