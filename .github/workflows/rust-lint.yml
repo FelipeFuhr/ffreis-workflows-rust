@@ -1,0 +1,47 @@
+name: Rust Lint (Clippy)
+
+on:
+  workflow_call:
+    inputs:
+      toolchain:
+        description: "Rust toolchain to use"
+        type: string
+        default: "stable"
+      working-directory:
+        description: "Directory containing the Cargo workspace"
+        type: string
+        default: "."
+      clippy-args:
+        description: "Extra arguments passed to cargo clippy"
+        type: string
+        default: "-- -D warnings"
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: ${{ inputs.toolchain }}
+          components: rustfmt, clippy
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
+        with:
+          workspaces: "${{ inputs.working-directory }} -> target"
+
+      - name: Run Clippy
+        run: |
+          set -euo pipefail
+          cargo clippy --all-targets --all-features ${{ inputs.clippy-args }}
