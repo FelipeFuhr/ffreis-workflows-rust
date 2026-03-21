@@ -40,7 +40,7 @@ lefthook-bootstrap:
 
 ## lefthook-install: Install git hooks via lefthook
 lefthook-install:
-	lefthook install
+	./.bin/lefthook install
 
 ## hooks: Bootstrap and install all git hooks
 hooks: lefthook-bootstrap lefthook-install

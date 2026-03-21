@@ -9,9 +9,10 @@ on:
 # Validates that every workflow defined in this library functions correctly
 # against the minimal example app in examples/hello/.
 #
-# rust-coverage uploads to Codecov only when CODECOV_TOKEN is set;
-# when absent the upload step is silently skipped — the coverage run still
-# executes and validates the workflow logic.
+# rust-coverage requires CODECOV_TOKEN to be configured for push events;
+# when the token is missing, coverage runs on push will fail rather than
+# silently skipping the upload. Ensure CODECOV_TOKEN is set in repository
+# or organization secrets before enabling this self-test workflow.
 #
 # rust-miri uses --lib to avoid compiling the Criterion benchmark harness
 # under Miri (Criterion uses features incompatible with the Miri interpreter).
