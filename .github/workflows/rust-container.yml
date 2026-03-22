@@ -10,7 +10,7 @@ on:
       containerfile:
         description: "Path to the Containerfile (or Dockerfile) relative to context"
         type: string
-        default: "Dockerfile"
+        default: "Containerfile"
       context:
         description: "Build context path"
         type: string
@@ -57,7 +57,7 @@ jobs:
         run: |
           set -euo pipefail
           "$TOOL" build \
-            --file "$CONTEXT/$CONTAINERFILE" \
+            --file "${GITHUB_WORKSPACE}/${CONTEXT}/${CONTAINERFILE}" \
             --tag "$IMAGE_NAME" \
             ${BUILD_ARGS} \
             "$CONTEXT"
