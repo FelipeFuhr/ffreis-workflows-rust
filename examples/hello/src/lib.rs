@@ -11,7 +11,7 @@
 /// assert!(!validate_username("alice!"));    // invalid char
 /// ```
 pub fn validate_username(s: &str) -> bool {
-    let len = s.len();
+    let len = s.chars().count();
     (3..=32).contains(&len) && s.chars().all(|c| c.is_alphanumeric() || c == '_')
 }
 
@@ -29,15 +29,10 @@ pub fn validate_username(s: &str) -> bool {
 /// assert!(!validate_email("user@localhost"));
 /// ```
 pub fn validate_email(s: &str) -> bool {
-    let mut parts = s.splitn(2, '@');
-    let local = match parts.next() {
-        Some(l) => l,
-        None => return false,
-    };
-    let domain = match parts.next() {
-        Some(d) => d,
-        None => return false,
-    };
+    if s.matches('@').count() != 1 {
+        return false;
+    }
+    let (local, domain) = s.split_once('@').unwrap();
     !local.is_empty()
         && domain.contains('.')
         && !domain.starts_with('.')
@@ -106,5 +101,10 @@ mod tests {
     #[test]
     fn email_dot_at_end_of_domain() {
         assert!(!validate_email("user@example.com."));
+    }
+
+    #[test]
+    fn email_multiple_at_signs() {
+        assert!(!validate_email("a@b@c.com"));
     }
 }

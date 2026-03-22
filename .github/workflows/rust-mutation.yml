@@ -63,7 +63,7 @@ jobs:
         working-directory: ${{ inputs.working-directory }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Rust (${{ inputs.toolchain }})
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
@@ -84,7 +84,9 @@ jobs:
 
       # Establish a baseline — avoids counting slow clean-build time as test time.
       - name: Baseline test run
-        run: cargo test --all-features 2>&1 | tail -5
+        run: |
+          set -euo pipefail
+          cargo test --all-features 2>&1 | tail -5
 
       - name: Run mutation testing
         id: run
