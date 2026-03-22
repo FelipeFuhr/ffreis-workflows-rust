@@ -1,0 +1,95 @@
+name: Rust SonarCloud
+
+on:
+  workflow_call:
+    inputs:
+      toolchain:
+        description: "Rust toolchain to use"
+        type: string
+        default: "stable"
+      working-directory:
+        description: "Directory containing the Cargo workspace"
+        type: string
+        default: "."
+      sonar-project-key:
+        description: "SonarCloud project key (defaults to repository name)"
+        type: string
+        default: ""
+      sonar-organization:
+        description: "SonarCloud organization slug"
+        type: string
+        default: ""
+      coverage-args:
+        description: "Arguments passed to cargo llvm-cov to generate LCOV report"
+        type: string
+        default: "--all-features --workspace --lcov --output-path lcov.info"
+      coverage-artifact-name:
+        description: "Name of a coverage artifact uploaded by rust-coverage.yml (skips regeneration)"
+        type: string
+        default: ""
+    secrets:
+      SONAR_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  sonar:
+    name: SonarCloud
+    runs-on: ubuntu-latest
+    if: vars.SONAR_ENABLED != 'false'
+
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust (${{ inputs.toolchain }})
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: ${{ inputs.toolchain }}
+          components: llvm-tools-preview
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
+        with:
+          workspaces: "${{ inputs.working-directory }} -> target"
+
+      - name: Download coverage artifact
+        if: inputs.coverage-artifact-name != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.coverage-artifact-name }}
+          path: ${{ inputs.working-directory }}
+
+      - name: Install cargo-llvm-cov (if no artifact)
+        if: inputs.coverage-artifact-name == ''
+        run: |
+          set -euo pipefail
+          cargo install cargo-llvm-cov --locked
+
+      - name: Generate coverage (if no artifact)
+        if: inputs.coverage-artifact-name == ''
+        run: |
+          set -euo pipefail
+          cargo llvm-cov ${{ inputs.coverage-args }}
+
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarqube-scan-action@a31c9398be7ace6bbfaf30c0bd5d415f843d45e9 # nosemgrep: generic.secrets.security.detected-sonarqube-docs-api-key.detected-sonarqube-docs-api-key
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: https://sonarcloud.io
+        with:
+          projectBaseDir: ${{ inputs.working-directory }}
+          args: >
+            -Dsonar.projectKey=${{ inputs.sonar-project-key || github.event.repository.name }}
+            -Dsonar.organization=${{ inputs.sonar-organization || vars.SONAR_ORGANIZATION }}
+            -Dsonar.coverageReportPaths=lcov.info
+            -Dsonar.sources=src
+            -Dsonar.tests=tests

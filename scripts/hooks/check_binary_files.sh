@@ -17,12 +17,14 @@ is_allowlisted() {
     testdata/*|*/testdata/*|examples/*|*/examples/*)
       return 0
       ;;
+    *) ;;
   esac
 
   case "$ext" in
     png|jpg|jpeg|svg|webp|ico|woff|woff2|ttf)
       return 0
       ;;
+    *) ;;
   esac
 
   return 1
@@ -31,7 +33,7 @@ is_allowlisted() {
 while IFS= read -r -d '' entry; do
   IFS=$'\t' read -r added deleted file <<<"$entry"
 
-  if [ "$added" != "-" ] || [ "$deleted" != "-" ]; then
+  if [[ "$added" != "-" || "$deleted" != "-" ]]; then
     continue
   fi
 
@@ -43,7 +45,7 @@ while IFS= read -r -d '' entry; do
   has_error=1
 done < <(git diff --cached --numstat --diff-filter=ACM -z)
 
-if [ "$has_error" -ne 0 ]; then
+if [[ "$has_error" -ne 0 ]]; then
   echo "Binary files are blocked unless they match allowlisted paths/extensions." >&2
   exit 1
 fi
