@@ -28,7 +28,7 @@ jobs:
         working-directory: ${{ inputs.working-directory }}
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
@@ -43,6 +43,7 @@ jobs:
       - name: Build documentation
         env:
           RUSTDOCFLAGS: "-D warnings"
+          DOC_ARGS: ${{ inputs.doc-args }}
         run: |
           set -euo pipefail
-          cargo doc ${{ inputs.doc-args }}
+          cargo doc $DOC_ARGS

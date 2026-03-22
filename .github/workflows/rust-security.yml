@@ -28,7 +28,7 @@ jobs:
         working-directory: ${{ inputs.working-directory }}
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -48,10 +48,12 @@ jobs:
           cargo install cargo-audit --locked
 
       - name: Run cargo audit
+        env:
+          IGNORE_ADVISORIES: ${{ inputs.ignore-advisories }}
         run: |
           set -euo pipefail
           IGNORE_FLAGS=""
-          for id in ${{ inputs.ignore-advisories }}; do
+          for id in $IGNORE_ADVISORIES; do
             IGNORE_FLAGS="$IGNORE_FLAGS --ignore $id"
           done
           # shellcheck disable=SC2086

@@ -1,15 +1,19 @@
 # Build stage
-FROM rust:1.80-slim AS builder
+FROM rust:1.85-slim AS builder
 WORKDIR /src
 
 # Cache dependencies separately from source
 COPY Cargo.toml Cargo.lock ./
-RUN mkdir src && echo "fn main(){}" > src/main.rs && echo "" > src/lib.rs \
+RUN mkdir -p src benches \
+    && echo "fn main(){}" > src/main.rs \
+    && echo "" > src/lib.rs \
+    && echo "fn main(){}" > benches/bench_validator.rs \
     && cargo build --release \
-    && rm -rf src
+    && rm -rf src benches
 
 COPY src ./src
-RUN touch src/main.rs src/lib.rs && cargo build --release
+COPY benches ./benches
+RUN touch src/main.rs src/lib.rs benches/bench_validator.rs && cargo build --release
 
 # Runtime stage
 FROM debian:bookworm-slim

@@ -29,7 +29,7 @@ jobs:
         working-directory: ${{ inputs.working-directory }}
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
       - name: Install Rust (nightly + miri)
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
@@ -48,6 +48,8 @@ jobs:
           cargo miri setup
 
       - name: Run Miri tests
+        env:
+          MIRI_ARGS: ${{ inputs.miri-args }}
         run: |
           set -euo pipefail
-          cargo miri test ${{ inputs.miri-args }}
+          cargo miri test $MIRI_ARGS

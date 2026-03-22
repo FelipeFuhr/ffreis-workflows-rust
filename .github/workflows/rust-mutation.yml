@@ -84,10 +84,15 @@ jobs:
 
       # Establish a baseline — avoids counting slow clean-build time as test time.
       - name: Baseline test run
-        run: cargo test --all-features 2>&1 | tail -5
+        run: |
+          set -euo pipefail
+          cargo test --all-features 2>&1 | tail -5
 
       - name: Run mutation testing
         id: run
+        env:
+          MUTATION_JOBS: ${{ inputs.jobs }}
+          MUTANTS_ARGS: ${{ inputs.mutants-args }}
         run: |
           set -euo pipefail
 
@@ -96,13 +101,15 @@ jobs:
           # Run cargo-mutants; exit code 0 = all caught, 2 = missed, 3 = timeout, 4 = error.
           # We capture exit code manually so we can still extract the score on partial runs.
           cargo mutants \
-            --jobs ${{ inputs.jobs }} \
+            --jobs "$MUTATION_JOBS" \
             --output mutants.out \
-            ${{ inputs.mutants-args }} \
+            $MUTANTS_ARGS \
             2>&1 || true
 
       - name: Compute score and enforce threshold
         id: score
+        env:
+          THRESHOLD: ${{ inputs.threshold }}
         run: |
           set -euo pipefail
 
@@ -122,7 +129,7 @@ jobs:
           fi
 
           total=$(( caught + missed ))
-          threshold="${{ inputs.threshold }}"
+          threshold="$THRESHOLD"
 
           if [ "$total" -eq 0 ]; then
             echo "::notice title=Mutation Score::No viable mutants found — marking as passed."

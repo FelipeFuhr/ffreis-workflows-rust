@@ -1,0 +1,33 @@
+name: Rust SAST (Semgrep)
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: "Directory to run steps in"
+        type: string
+        default: "."
+      config:
+        description: "Semgrep config/ruleset to use (e.g. auto, p/rust)"
+        type: string
+        default: "auto"
+
+permissions:
+  contents: read
+
+jobs:
+  semgrep:
+    name: Semgrep SAST
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Semgrep
+        uses: semgrep/semgrep-action@v1
+        with:
+          config: ${{ inputs.config }}

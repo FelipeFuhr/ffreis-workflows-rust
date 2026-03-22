@@ -9,9 +9,14 @@ on:
 # Validates that every workflow defined in this library functions correctly
 # against the minimal example app in examples/hello/.
 #
-# rust-coverage uploads to Codecov only when CODECOV_TOKEN is set;
-# when absent the upload step is silently skipped — the coverage run still
-# executes and validates the workflow logic.
+# rust-sonar requires SONAR_TOKEN to be configured in the repository. The job
+# is skipped on fork pull requests (secrets are not available to forks), but
+# runs on all other events and fails if the token is absent.
+#
+# rust-coverage requires CODECOV_TOKEN to be configured for push events;
+# when the token is missing, coverage runs on push will fail rather than
+# silently skipping the upload. Ensure CODECOV_TOKEN is set in repository
+# or organization secrets before enabling this self-test workflow.
 #
 # rust-miri uses --lib to avoid compiling the Criterion benchmark harness
 # under Miri (Criterion uses features incompatible with the Miri interpreter).
@@ -65,7 +70,7 @@ jobs:
   msrv:
     uses: ./.github/workflows/rust-msrv.yml
     with:
-      msrv: "1.80.0"
+      msrv: "1.85.0"
       working-directory: examples/hello
 
   miri:
@@ -74,7 +79,27 @@ jobs:
       working-directory: examples/hello
       miri-args: --lib
 
+  mutation:
+    uses: ./.github/workflows/rust-mutation.yml
+    with:
+      working-directory: examples/hello
+      threshold: 50
+
+  semgrep:
+    uses: ./.github/workflows/rust-semgrep.yml
+    with:
+      working-directory: examples/hello
+
+  sonar:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false
+    uses: ./.github/workflows/rust-sonar.yml
+    with:
+      working-directory: examples/hello
+    secrets:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
   container:
     uses: ./.github/workflows/rust-container.yml
     with:
       image-name: hello-example
+      context: examples/hello
