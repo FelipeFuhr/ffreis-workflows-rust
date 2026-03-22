@@ -103,5 +103,5 @@ jobs:
           projectBaseDir: ${{ inputs.working-directory }}
           args: >
             ${{ steps.sonar-args.outputs.args }}
-            -Dsonar.coverageReportPaths=lcov.info
+            -Dsonar.rust.lcov.reportPaths=lcov.info
             -Dsonar.sources=src
