@@ -43,6 +43,7 @@ jobs:
       - name: Build documentation
         env:
           RUSTDOCFLAGS: "-D warnings"
+          DOC_ARGS: ${{ inputs.doc-args }}
         run: |
           set -euo pipefail
-          cargo doc ${{ inputs.doc-args }}
+          cargo doc $DOC_ARGS

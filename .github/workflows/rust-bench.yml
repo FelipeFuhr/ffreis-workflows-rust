@@ -46,9 +46,11 @@ jobs:
           workspaces: "${{ inputs.working-directory }} -> target"
 
       - name: Run benchmarks
+        env:
+          BENCH_ARGS: ${{ inputs.bench-args }}
         run: |
           set -euo pipefail
-          cargo bench ${{ inputs.bench-args }}
+          cargo bench $BENCH_ARGS
 
       - name: Upload Criterion results
         if: always()

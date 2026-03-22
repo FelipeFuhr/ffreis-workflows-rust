@@ -51,6 +51,8 @@ jobs:
           workspaces: "${{ inputs.working-directory }} -> target"
 
       - name: Build
+        env:
+          BUILD_ARGS: ${{ inputs.build-args }}
         run: |
           set -euo pipefail
-          cargo build ${{ inputs.build-args }}
+          cargo build $BUILD_ARGS

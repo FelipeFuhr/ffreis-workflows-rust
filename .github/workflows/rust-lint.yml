@@ -42,6 +42,8 @@ jobs:
           workspaces: "${{ inputs.working-directory }} -> target"
 
       - name: Run Clippy
+        env:
+          CLIPPY_ARGS: ${{ inputs.clippy-args }}
         run: |
           set -euo pipefail
-          cargo clippy --all-targets --all-features ${{ inputs.clippy-args }}
+          cargo clippy --all-targets --all-features $CLIPPY_ARGS

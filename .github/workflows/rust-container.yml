@@ -10,7 +10,7 @@ on:
       containerfile:
         description: "Path to the Containerfile (or Dockerfile) relative to context"
         type: string
-        default: "Containerfile"
+        default: "Dockerfile"
       context:
         description: "Build context path"
         type: string
@@ -48,20 +48,26 @@ jobs:
           echo "Container runtime: $(cat "$GITHUB_OUTPUT" | grep tool | cut -d= -f2)"
 
       - name: Build container image
+        env:
+          TOOL: ${{ steps.runtime.outputs.tool }}
+          BUILD_ARGS: ${{ inputs.build-args }}
+          CONTEXT: ${{ inputs.context }}
+          CONTAINERFILE: ${{ inputs.containerfile }}
+          IMAGE_NAME: ${{ inputs.image-name }}
         run: |
           set -euo pipefail
-          TOOL="${{ steps.runtime.outputs.tool }}"
-          BUILD_ARGS="${{ inputs.build-args }}"
           "$TOOL" build \
-            --file "${{ inputs.context }}/${{ inputs.containerfile }}" \
-            --tag "${{ inputs.image-name }}" \
+            --file "$CONTEXT/$CONTAINERFILE" \
+            --tag "$IMAGE_NAME" \
             ${BUILD_ARGS} \
-            "${{ inputs.context }}"
+            "$CONTEXT"
 
       - name: Smoke-test container image
+        env:
+          TOOL: ${{ steps.runtime.outputs.tool }}
+          IMAGE_NAME: ${{ inputs.image-name }}
         run: |
           set -euo pipefail
-          TOOL="${{ steps.runtime.outputs.tool }}"
-          echo "Verifying image '${{ inputs.image-name }}' exists locally..."
-          "$TOOL" image inspect "${{ inputs.image-name }}" > /dev/null
+          echo "Verifying image '$IMAGE_NAME' exists locally..."
+          "$TOOL" image inspect "$IMAGE_NAME" > /dev/null
           echo "Image smoke-test passed."

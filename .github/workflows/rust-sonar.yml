@@ -76,9 +76,23 @@ jobs:
 
       - name: Generate coverage (if no artifact)
         if: inputs.coverage-artifact-name == ''
+        env:
+          COVERAGE_ARGS: ${{ inputs.coverage-args }}
         run: |
           set -euo pipefail
-          cargo llvm-cov ${{ inputs.coverage-args }}
+          cargo llvm-cov $COVERAGE_ARGS
+
+      - name: Build Sonar extra args
+        id: sonar-args
+        env:
+          PROJECT_KEY: ${{ inputs.sonar-project-key }}
+          ORGANIZATION: ${{ inputs.sonar-organization || vars.SONAR_ORGANIZATION }}
+        run: |
+          set -euo pipefail
+          EXTRA=""
+          [ -n "$PROJECT_KEY" ] && EXTRA="$EXTRA -Dsonar.projectKey=$PROJECT_KEY"
+          [ -n "$ORGANIZATION" ] && EXTRA="$EXTRA -Dsonar.organization=$ORGANIZATION"
+          echo "args=$EXTRA" >> "$GITHUB_OUTPUT"
 
       - name: SonarCloud Scan
         uses: SonarSource/sonarqube-scan-action@a31c9398be7ace6bbfaf30c0bd5d415f843d45e9 # nosemgrep: generic.secrets.security.detected-sonarqube-docs-api-key.detected-sonarqube-docs-api-key
@@ -88,8 +102,7 @@ jobs:
         with:
           projectBaseDir: ${{ inputs.working-directory }}
           args: >
-            -Dsonar.projectKey=${{ inputs.sonar-project-key || github.event.repository.name }}
-            -Dsonar.organization=${{ inputs.sonar-organization || vars.SONAR_ORGANIZATION }}
+            ${{ steps.sonar-args.outputs.args }}
             -Dsonar.coverageReportPaths=lcov.info
             -Dsonar.sources=src
             -Dsonar.tests=tests

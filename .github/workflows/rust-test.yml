@@ -46,6 +46,8 @@ jobs:
           workspaces: "${{ inputs.working-directory }} -> target"
 
       - name: Run tests
+        env:
+          TEST_ARGS: ${{ inputs.test-args }}
         run: |
           set -euo pipefail
-          cargo test ${{ inputs.test-args }}
+          cargo test $TEST_ARGS

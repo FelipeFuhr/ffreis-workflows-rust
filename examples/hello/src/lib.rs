@@ -33,10 +33,7 @@ pub fn validate_email(s: &str) -> bool {
         return false;
     }
     let (local, domain) = s.split_once('@').unwrap();
-    !local.is_empty()
-        && domain.contains('.')
-        && !domain.starts_with('.')
-        && !domain.ends_with('.')
+    !local.is_empty() && domain.contains('.') && !domain.starts_with('.') && !domain.ends_with('.')
 }
 
 #[cfg(test)]

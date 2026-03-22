@@ -48,6 +48,8 @@ jobs:
           cargo miri setup
 
       - name: Run Miri tests
+        env:
+          MIRI_ARGS: ${{ inputs.miri-args }}
         run: |
           set -euo pipefail
-          cargo miri test ${{ inputs.miri-args }}
+          cargo miri test $MIRI_ARGS
