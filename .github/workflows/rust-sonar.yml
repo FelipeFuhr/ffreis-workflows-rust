@@ -105,4 +105,3 @@ jobs:
             ${{ steps.sonar-args.outputs.args }}
             -Dsonar.coverageReportPaths=lcov.info
             -Dsonar.sources=src
-            -Dsonar.tests=tests
