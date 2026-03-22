@@ -102,3 +102,4 @@ jobs:
     uses: ./.github/workflows/rust-container.yml
     with:
       image-name: hello-example
+      context: examples/hello
