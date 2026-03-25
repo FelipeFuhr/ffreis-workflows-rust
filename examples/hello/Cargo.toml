@@ -15,7 +15,7 @@ name = "hello"
 path = "src/lib.rs"
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports"] }
 
 [[bench]]
 name = "bench_validator"
