@@ -1,7 +1,7 @@
 name: Rust Mutation Testing
 
 # Reusable workflow — callers invoke via:
-#   uses: ffreis/ffreis-platform-workflows-rust/.github/workflows/rust-mutation.yml@main
+#   uses: FelipeFuhr/ffreis-workflows-rust/.github/workflows/rust-mutation.yml@main
 #
 # Intended schedule: weekly (Sunday 02:00 UTC) or workflow_dispatch.
 # Do NOT run on every PR — mutation testing is slow (15–90 min per repo).
