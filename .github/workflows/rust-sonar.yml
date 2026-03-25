@@ -89,6 +89,13 @@ jobs:
           ORGANIZATION: ${{ inputs.sonar-organization || vars.SONAR_ORGANIZATION }}
         run: |
           set -euo pipefail
+          if [[ -z "$PROJECT_KEY" && -f sonar-project.properties ]]; then
+            PROJECT_KEY="$(grep -E '^sonar\\.projectKey=' sonar-project.properties | head -n 1 | cut -d= -f2- || true)"
+          fi
+          if [[ -z "$ORGANIZATION" && -f sonar-project.properties ]]; then
+            ORGANIZATION="$(grep -E '^sonar\\.organization=' sonar-project.properties | head -n 1 | cut -d= -f2- || true)"
+          fi
+
           EXTRA=""
           [ -n "$PROJECT_KEY" ] && EXTRA="$EXTRA -Dsonar.projectKey=$PROJECT_KEY"
           [ -n "$ORGANIZATION" ] && EXTRA="$EXTRA -Dsonar.organization=$ORGANIZATION"
