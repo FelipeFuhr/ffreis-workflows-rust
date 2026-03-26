@@ -28,10 +28,10 @@ permissions:
 
 jobs:
   workflows-policy:
-    uses: FelipeFuhr/ffreis-workflows-general/.github/workflows/general-workflows-policy.yml@v0.1.7
+    uses: FelipeFuhr/ffreis-workflows-general/.github/workflows/general-workflows-policy.yml@6c9269aea4f05cdf73672f3da7ee3501b1285463 # v0.1.7
 
   codeql-actions:
-    uses: FelipeFuhr/ffreis-workflows-general/.github/workflows/general-codeql.yml@v0.1.7
+    uses: FelipeFuhr/ffreis-workflows-general/.github/workflows/general-codeql.yml@6c9269aea4f05cdf73672f3da7ee3501b1285463 # v0.1.7
     with:
       languages: actions
       source-root: .
@@ -85,7 +85,7 @@ jobs:
   msrv:
     uses: ./.github/workflows/rust-msrv.yml
     with:
-      msrv: "1.85.0"
+      msrv: "1.88.0"
       working-directory: examples/hello
 
   miri:
@@ -106,7 +106,7 @@ jobs:
       working-directory: examples/hello
 
   sonar:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false
+    if: vars.SONAR_ENABLED == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
     uses: ./.github/workflows/rust-sonar.yml
     with:
       working-directory: examples/hello

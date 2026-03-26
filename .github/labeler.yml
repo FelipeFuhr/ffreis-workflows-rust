@@ -1,0 +1,30 @@
+ci:
+  - changed-files:
+      - any-glob-to-any-file:
+          - .github/workflows/**
+          - .github/actions/**
+
+rust:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.rs"
+          - Cargo.toml
+          - Cargo.lock
+          - rust-toolchain*
+
+examples:
+  - changed-files:
+      - any-glob-to-any-file:
+          - examples/**
+
+scripts:
+  - changed-files:
+      - any-glob-to-any-file:
+          - scripts/**
+          - Makefile
+          - lefthook.yml
+
+docs:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.md"

@@ -16,14 +16,11 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-      issues: write
-    uses: FelipeFuhr/ffreis-workflows-general/.github/workflows/general-labeler.yml@v0.1.7
-    with:
-      rules-json: |-
-        [
-          {"label":"ci","patterns":[".github/workflows/**",".github/actions/**"]},
-          {"label":"rust","patterns":["**/*.rs","Cargo.toml","Cargo.lock","rust-toolchain*"]},
-          {"label":"examples","patterns":["examples/**"]},
-          {"label":"scripts","patterns":["scripts/**","Makefile","lefthook.yml"]},
-          {"label":"docs","patterns":["**/*.md"]}
-        ]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Apply labels from changed files
+        uses: actions/labeler@8558fd74291d67161a8a78ce36a881fa63b766a9 # v5.0.0
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          configuration-path: .github/labeler.yml
+          sync-labels: true
