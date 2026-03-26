@@ -46,4 +46,5 @@ jobs:
           CLIPPY_ARGS: ${{ inputs.clippy-args }}
         run: |
           set -euo pipefail
-          cargo clippy --all-targets --all-features $CLIPPY_ARGS
+          read -r -a clippy_args_arr <<< "${CLIPPY_ARGS:-}"
+          cargo clippy --all-targets --all-features "${clippy_args_arr[@]}"

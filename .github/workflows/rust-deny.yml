@@ -46,4 +46,5 @@ jobs:
           DENY_CHECKS: ${{ inputs.checks }}
         run: |
           set -euo pipefail
-          cargo deny check $DENY_CHECKS
+          read -r -a deny_checks_arr <<< "${DENY_CHECKS:-}"
+          cargo deny check "${deny_checks_arr[@]}"

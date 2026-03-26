@@ -80,7 +80,8 @@ jobs:
           COVERAGE_ARGS: ${{ inputs.coverage-args }}
         run: |
           set -euo pipefail
-          cargo llvm-cov $COVERAGE_ARGS
+          read -r -a coverage_args_arr <<< "${COVERAGE_ARGS:-}"
+          cargo llvm-cov "${coverage_args_arr[@]}"
 
       - name: Build Sonar extra args
         id: sonar-args

@@ -55,4 +55,5 @@ jobs:
           BUILD_ARGS: ${{ inputs.build-args }}
         run: |
           set -euo pipefail
-          cargo build $BUILD_ARGS
+          read -r -a build_args_arr <<< "${BUILD_ARGS:-}"
+          cargo build "${build_args_arr[@]}"

@@ -52,9 +52,10 @@ jobs:
           IGNORE_ADVISORIES: ${{ inputs.ignore-advisories }}
         run: |
           set -euo pipefail
-          IGNORE_FLAGS=""
-          for id in $IGNORE_ADVISORIES; do
-            IGNORE_FLAGS="$IGNORE_FLAGS --ignore $id"
+          read -r -a ignore_ids_arr <<< "${IGNORE_ADVISORIES:-}"
+          ignore_flags_arr=()
+          for id in "${ignore_ids_arr[@]}"; do
+            [[ -n "$id" ]] || continue
+            ignore_flags_arr+=(--ignore "$id")
           done
-          # shellcheck disable=SC2086
-          cargo audit $IGNORE_FLAGS
+          cargo audit "${ignore_flags_arr[@]}"

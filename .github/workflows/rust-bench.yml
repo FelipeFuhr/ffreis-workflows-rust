@@ -50,7 +50,8 @@ jobs:
           BENCH_ARGS: ${{ inputs.bench-args }}
         run: |
           set -euo pipefail
-          cargo bench $BENCH_ARGS
+          read -r -a bench_args_arr <<< "${BENCH_ARGS:-}"
+          cargo bench "${bench_args_arr[@]}"
 
       - name: Upload Criterion results
         if: always()
