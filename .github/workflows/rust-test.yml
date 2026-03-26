@@ -50,4 +50,5 @@ jobs:
           TEST_ARGS: ${{ inputs.test-args }}
         run: |
           set -euo pipefail
-          cargo test $TEST_ARGS
+          read -r -a test_args_arr <<< "${TEST_ARGS:-}"
+          cargo test "${test_args_arr[@]}"

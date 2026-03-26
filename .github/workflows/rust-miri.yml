@@ -52,4 +52,5 @@ jobs:
           MIRI_ARGS: ${{ inputs.miri-args }}
         run: |
           set -euo pipefail
-          cargo miri test $MIRI_ARGS
+          read -r -a miri_args_arr <<< "${MIRI_ARGS:-}"
+          cargo miri test "${miri_args_arr[@]}"

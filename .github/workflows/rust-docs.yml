@@ -46,4 +46,5 @@ jobs:
           DOC_ARGS: ${{ inputs.doc-args }}
         run: |
           set -euo pipefail
-          cargo doc $DOC_ARGS
+          read -r -a doc_args_arr <<< "${DOC_ARGS:-}"
+          cargo doc "${doc_args_arr[@]}"

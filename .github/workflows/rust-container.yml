@@ -45,7 +45,8 @@ jobs:
             echo "::error::Neither podman nor docker found on this runner."
             exit 1
           fi
-          echo "Container runtime: $(cat "$GITHUB_OUTPUT" | grep tool | cut -d= -f2)"
+          runtime_tool="$(grep -E '^tool=' "$GITHUB_OUTPUT" | cut -d= -f2)"
+          echo "Container runtime: ${runtime_tool}"
 
       - name: Build container image
         env:
@@ -56,10 +57,11 @@ jobs:
           IMAGE_NAME: ${{ inputs.image-name }}
         run: |
           set -euo pipefail
+          read -r -a build_args_arr <<< "${BUILD_ARGS:-}"
           "$TOOL" build \
             --file "${GITHUB_WORKSPACE}/${CONTEXT}/${CONTAINERFILE}" \
             --tag "$IMAGE_NAME" \
-            ${BUILD_ARGS} \
+            "${build_args_arr[@]}" \
             "$CONTEXT"
 
       - name: Smoke-test container image

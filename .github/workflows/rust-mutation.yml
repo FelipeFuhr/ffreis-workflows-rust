@@ -97,13 +97,14 @@ jobs:
           set -euo pipefail
 
           mkdir -p mutants.out
+          read -r -a mutants_args_arr <<< "${MUTANTS_ARGS:-}"
 
           # Run cargo-mutants; exit code 0 = all caught, 2 = missed, 3 = timeout, 4 = error.
           # We capture exit code manually so we can still extract the score on partial runs.
           cargo mutants \
             --jobs "$MUTATION_JOBS" \
             --output mutants.out \
-            $MUTANTS_ARGS \
+            "${mutants_args_arr[@]}" \
             2>&1 || true
 
       - name: Compute score and enforce threshold
@@ -129,6 +130,11 @@ jobs:
           fi
 
           total=$(( caught + missed ))
+          THRESHOLD="${THRESHOLD:-}"
+          if [[ -z "$THRESHOLD" ]]; then
+            echo "::error::threshold input is required"
+            exit 1
+          fi
           threshold="$THRESHOLD"
 
           if [ "$total" -eq 0 ]; then

@@ -62,7 +62,8 @@ jobs:
           COVERAGE_ARGS: ${{ inputs.coverage-args }}
         run: |
           set -euo pipefail
-          cargo llvm-cov $COVERAGE_ARGS
+          read -r -a coverage_args_arr <<< "${COVERAGE_ARGS:-}"
+          cargo llvm-cov "${coverage_args_arr[@]}"
 
       - name: Enforce coverage threshold
         if: ${{ inputs.coverage-threshold > 0 }}
@@ -71,8 +72,8 @@ jobs:
         run: |
           set -euo pipefail
           # Parse line coverage percentage from lcov.info summary
-          COVERED=$(grep -E "^DA:" lcov.info | grep -v ",0$" | wc -l)
-          TOTAL=$(grep -E "^DA:" lcov.info | wc -l)
+          COVERED=$(grep -E -c '^DA:[0-9]+,[1-9][0-9]*$' lcov.info || true)
+          TOTAL=$(grep -E -c '^DA:' lcov.info || true)
           if [[ "$TOTAL" -eq 0 ]]; then
             echo "::error::No coverage data found in lcov.info"
             exit 1
