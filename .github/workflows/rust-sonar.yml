@@ -86,8 +86,8 @@ jobs:
       - name: Build Sonar extra args
         id: sonar-args
         env:
-          PROJECT_KEY: ${{ inputs.sonar-project-key }}
-          ORGANIZATION: ${{ inputs.sonar-organization || vars.SONAR_ORGANIZATION }}
+          PROJECT_KEY: ${{ inputs.sonar-project-key || vars.SONAR_PROJECT_KEY || format('{0}_{1}', github.repository_owner, github.event.repository.name) }}
+          ORGANIZATION: ${{ inputs.sonar-organization || vars.SONAR_ORGANIZATION || github.repository_owner }}
         run: |
           set -euo pipefail
           if [[ -z "$PROJECT_KEY" && -f sonar-project.properties ]]; then
