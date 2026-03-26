@@ -1,0 +1,29 @@
+name: DevOps / PR Labeler
+
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  labeler:
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    uses: FelipeFuhr/ffreis-workflows-general/.github/workflows/general-labeler.yml@v0.1.3
+    with:
+      rules-json: |-
+        [
+          {"label":"ci","patterns":[".github/workflows/**",".github/actions/**"]},
+          {"label":"rust","patterns":["**/*.rs","Cargo.toml","Cargo.lock","rust-toolchain*"]},
+          {"label":"examples","patterns":["examples/**"]},
+          {"label":"scripts","patterns":["scripts/**","Makefile","lefthook.yml"]},
+          {"label":"docs","patterns":["**/*.md"]}
+        ]
