@@ -97,6 +97,11 @@ jobs:
             ORGANIZATION="$(grep -E '^sonar\\.organization=' sonar-project.properties | head -n 1 | cut -d= -f2- || true)"
           fi
 
+          # SonarCloud organization keys are typically lowercase slugs. To avoid
+          # failures when repo/org casing differs (e.g. GitHub owner "FelipeFuhr"
+          # vs Sonar org "felipefuhr"), normalize to lowercase.
+          ORGANIZATION="$(printf '%s' "$ORGANIZATION" | tr '[:upper:]' '[:lower:]')"
+
           EXTRA=""
           [ -n "$PROJECT_KEY" ] && EXTRA="$EXTRA -Dsonar.projectKey=$PROJECT_KEY"
           [ -n "$ORGANIZATION" ] && EXTRA="$EXTRA -Dsonar.organization=$ORGANIZATION"

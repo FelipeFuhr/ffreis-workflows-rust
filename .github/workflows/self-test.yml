@@ -85,7 +85,7 @@ jobs:
   msrv:
     uses: ./.github/workflows/rust-msrv.yml
     with:
-      msrv: "1.85.0"
+      msrv: "1.88.0"
       working-directory: examples/hello
 
   miri:
