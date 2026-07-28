@@ -48,6 +48,9 @@ on:
         type: string
         default: "4"
     secrets:
+      PRIVATE_DEPS_TOKEN:
+        description: "Token with read access to private git-dependency repos (e.g. FLEET_READ_TOKEN). Optional — omit if the workspace has no private cargo git deps."
+        required: false
       SONAR_TOKEN:
         required: true
 
@@ -71,6 +74,19 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
+
+      - name: Configure git for private cargo dependencies
+        env:
+          PRIVATE_DEPS_TOKEN: ${{ secrets.PRIVATE_DEPS_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$PRIVATE_DEPS_TOKEN" ]]; then
+            git config --global url."https://x-access-token:${PRIVATE_DEPS_TOKEN}@github.com/".insteadOf "https://github.com/"
+            # cargo's libgit2 backend does not reliably honor url.insteadOf
+            # credential rewriting; force it to shell out to system git,
+            # which does.
+            echo "CARGO_NET_GIT_FETCH_WITH_CLI=true" >> "$GITHUB_ENV"
+          fi
 
       - name: Install Rust (${{ inputs.toolchain }})
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
