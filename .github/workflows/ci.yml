@@ -59,6 +59,7 @@ jobs:
   lint:
     permissions:
       contents: read
+      id-token: write
     uses: ./.github/workflows/rust-lint.yml
     with:
       working-directory: examples/hello
@@ -67,6 +68,7 @@ jobs:
     if: ${{ !github.event.pull_request.draft }}
     permissions:
       contents: read
+      id-token: write
     uses: ./.github/workflows/rust-test.yml
     with:
       working-directory: examples/hello
@@ -74,6 +76,7 @@ jobs:
   build:
     permissions:
       contents: read
+      id-token: write
     uses: ./.github/workflows/rust-build.yml
     with:
       working-directory: examples/hello
@@ -81,6 +84,7 @@ jobs:
   docs:
     permissions:
       contents: read
+      id-token: write
     uses: ./.github/workflows/rust-docs.yml
     with:
       working-directory: examples/hello
@@ -103,6 +107,7 @@ jobs:
     if: ${{ !github.event.pull_request.draft }}
     permissions:
       contents: read
+      id-token: write
     uses: ./.github/workflows/rust-coverage.yml
     with:
       working-directory: examples/hello
