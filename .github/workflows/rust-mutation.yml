@@ -34,7 +34,14 @@ on:
         type: number
         default: 4
       mutants-args:
-        description: 'Extra flags passed verbatim to cargo mutants'
+        description: >-
+          Extra flags passed verbatim to cargo mutants. WARNING: the default
+          ('') is UNSCOPED — it mutates the ENTIRE cargo workspace, not just
+          one crate. On a multi-crate workspace this has filled CI disk
+          before. Callers with more than one crate MUST pass '-p
+          <crate-name>' (or run a matrix, one job per crate). This job prints
+          a ::warning:: when it detects an unscoped run against a
+          multi-member workspace, but does not fail the build for it.
         required: false
         type: string
         default: ''
@@ -113,6 +120,44 @@ jobs:
         uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
         with:
           workspaces: "${{ inputs.working-directory }} -> target"
+
+      # Disk-safety net (not a policy gate): mutants-args defaulting to ''
+      # mutates the whole workspace, which has filled CI disk before on
+      # multi-crate repos. This only warns — it never fails the job — because
+      # some callers may be intentionally relying on today's unscoped
+      # behavior mid-rollout. The actual policy fix (adding -p <crate> at
+      # each caller) is a separate, per-repo change.
+      - name: Warn on unscoped mutation testing (multi-crate workspace)
+        env:
+          MUTANTS_ARGS: ${{ inputs.mutants-args }}
+        run: |
+          set -euo pipefail
+
+          # Scoped callers (-p <crate>, --file, etc.) are exempt regardless
+          # of workspace shape.
+          if [[ -n "${MUTANTS_ARGS// /}" ]]; then
+            exit 0
+          fi
+
+          if [[ ! -f Cargo.toml ]] || ! grep -q '^\[workspace\]' Cargo.toml; then
+            exit 0  # single-crate repo — unscoped mutation covers only itself
+          fi
+
+          member_count=0
+          if command -v cargo >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+            member_count=$(cargo metadata --no-deps --format-version=1 2>/dev/null \
+              | jq '.workspace_members | length' 2>/dev/null || echo 0)
+          fi
+          if [[ -z "$member_count" || "$member_count" -eq 0 ]]; then
+            # Fallback when cargo metadata/jq are unavailable: count quoted
+            # path entries inside the `members = [...]` array text directly.
+            members_block=$(awk '/members[[:space:]]*=/{flag=1} flag{print; if (/\]/) exit}' Cargo.toml)
+            member_count=$(grep -oE '"[^"]+"' <<< "$members_block" | wc -l || echo 0)
+          fi
+
+          if [[ "$member_count" -gt 1 ]]; then
+            echo "::warning title=Unscoped cargo-mutants run::mutants-args is empty ('') and this workspace declares ${member_count} member(s). The default mutates the ENTIRE workspace, which has filled CI disk before on multi-crate repos. Pass mutants-args: '-p <crate-name>' (or run one job per crate) to scope this run."
+          fi
 
       - name: Install cargo-mutants
         run: |

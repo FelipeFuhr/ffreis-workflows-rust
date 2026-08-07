@@ -1,0 +1,215 @@
+name: Rust Integration Coverage (cargo-llvm-cov + Codecov)
+
+# Sibling of rust-coverage.yml, gated as a SEPARATE metric (not merged into
+# unit coverage) so unit and integration floors can be enforced and tracked
+# independently.
+#
+# Targets convention (a): `#[ignore]`-tagged integration tests run via
+# `--include-ignored` in the same crate's `tests/` dir (see e.g. the
+# rust-lambda project template and its consumers). A repo using convention
+# (b) instead (a dedicated `integration-tests` workspace member) can still
+# use this workflow unmodified — `--include-ignored` is a no-op for a crate
+# with no ignored tests, and `--workspace` picks up the separate member
+# automatically.
+
+on:
+  workflow_call:
+    inputs:
+      toolchain:
+        description: "Rust toolchain to use (must support llvm-tools-preview component)"
+        type: string
+        default: "stable"
+      working-directory:
+        description: "Directory containing the Cargo workspace"
+        type: string
+        default: "."
+      coverage-args:
+        description: "Arguments passed to cargo llvm-cov. Default runs --include-ignored so #[ignore]-tagged integration tests are exercised; --test-threads=1 avoids cross-test interference common in integration suites (shared DB/fixtures/env)."
+        type: string
+        default: "--all-features --workspace --lcov --output-path lcov-integration.info -- --include-ignored --test-threads=1"
+      coverage-threshold:
+        description: "Minimum line coverage percentage. 0 = no gate."
+        type: number
+        default: 0
+      codecov-flags:
+        description: "Flags passed to the Codecov upload"
+        type: string
+        default: "integration"
+      sccache:
+        description: "Enable sccache compiler caching (S3 backend)"
+        type: boolean
+        default: false
+      sccache-bucket:
+        description: "S3 bucket name for the sccache backend"
+        type: string
+        default: ""
+      sccache-region:
+        description: "AWS region of the sccache bucket"
+        type: string
+        default: "us-east-1"
+      sccache-role-arn:
+        description: "IAM role ARN assumed via OIDC for sccache S3 access"
+        type: string
+        default: ""
+      run_on_draft:
+        description: "Run even on draft PRs (default: skip on draft to save CI minutes)"
+        required: false
+        type: boolean
+        default: false
+      runner:
+        description: |
+          JSON-encoded runner label(s). Default: GitHub-hosted ubuntu-latest.
+        required: false
+        type: string
+        default: '["ubuntu-latest"]'
+      cargo-build-jobs:
+        description: >-
+          Caps CARGO_BUILD_JOBS (parallel rustc compile units). Default "4"
+          matches the workspace Makefile convention — memory-safe on a
+          4.5Gi-limited self-hosted runner pod. Hosted-runner callers wanting
+          full parallelism can pass a higher value (e.g. the runner's core
+          count).
+        type: string
+        default: "4"
+    secrets:
+      CODECOV_TOKEN:
+        required: false
+      PRIVATE_DEPS_TOKEN:
+        description: "Token with read access to private git-dependency repos (e.g. FLEET_READ_TOKEN). Optional — omit if the workspace has no private cargo git deps."
+        required: false
+
+jobs:
+  integration-coverage:
+    if: ${{ inputs.run_on_draft || vars.CI_RUN_ON_DRAFT == 'true' || github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      # Only used when `sccache` + `sccache-role-arn` are set, to mint an
+      # OIDC token for the S3 cache backend. No-op otherwise.
+      id-token: write
+    runs-on: ${{ fromJson(inputs.runner) }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+    env:
+      CARGO_BUILD_JOBS: ${{ inputs.cargo-build-jobs }}
+
+    steps:
+      - uses: actions/checkout@0c366fd6a839edf440554fa01a7085ccba70ac98 # v4
+
+      - name: Configure git for private cargo dependencies
+        env:
+          PRIVATE_DEPS_TOKEN: ${{ secrets.PRIVATE_DEPS_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$PRIVATE_DEPS_TOKEN" ]]; then
+            git config --global url."https://x-access-token:${PRIVATE_DEPS_TOKEN}@github.com/".insteadOf "https://github.com/"
+            # cargo's libgit2 backend does not reliably honor url.insteadOf
+            # credential rewriting; force it to shell out to system git,
+            # which does.
+            echo "CARGO_NET_GIT_FETCH_WITH_CLI=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: ${{ inputs.toolchain }}
+          components: llvm-tools-preview
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@23869a5bd66c73db3c0ac40331f3206eb23791dc # v2.9.1
+        with:
+          workspaces: "${{ inputs.working-directory }} -> target"
+
+      - name: Configure AWS credentials for sccache
+        if: ${{ inputs.sccache && inputs.sccache-role-arn != '' }}
+        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6.2.0
+        with:
+          role-to-assume: ${{ inputs.sccache-role-arn }}
+          aws-region: ${{ inputs.sccache-region }}
+
+      - name: Set up sccache
+        if: ${{ inputs.sccache }}
+        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+
+      - name: Enable sccache
+        if: ${{ inputs.sccache }}
+        env:
+          SCCACHE_BUCKET: ${{ inputs.sccache-bucket }}
+          SCCACHE_REGION: ${{ inputs.sccache-region }}
+          SCCACHE_S3_KEY_PREFIX: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          {
+            echo "RUSTC_WRAPPER=sccache"
+            echo "CARGO_INCREMENTAL=0"
+            echo "SCCACHE_BUCKET=${SCCACHE_BUCKET}"
+            echo "SCCACHE_REGION=${SCCACHE_REGION}"
+            echo "SCCACHE_S3_KEY_PREFIX=${SCCACHE_S3_KEY_PREFIX}"
+          } >> "$GITHUB_ENV"
+
+      - name: Install cargo-llvm-cov
+        # Prebuilt binary (no from-source compile per run).
+        uses: taiki-e/install-action@25435dc8dd3baed7417e0c96d3fe89013a5b2e09 # v2.81.3
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Generate integration coverage report
+        env:
+          COVERAGE_ARGS: ${{ inputs.coverage-args }}
+        run: |
+          set -euo pipefail
+          read -r -a coverage_args_arr <<< "${COVERAGE_ARGS:-}"
+          cargo llvm-cov "${coverage_args_arr[@]}"
+
+      - name: sccache stats
+        if: ${{ inputs.sccache }}
+        run: sccache --show-stats
+
+      - name: Enforce integration coverage threshold
+        if: ${{ inputs.coverage-threshold > 0 }}
+        env:
+          THRESHOLD: ${{ inputs.coverage-threshold }}
+        run: |
+          set -euo pipefail
+          # Parse line coverage percentage from the lcov summary
+          COVERED=$(grep -E -c '^DA:[0-9]+,[1-9][0-9]*$' lcov-integration.info || true)
+          TOTAL=$(grep -E -c '^DA:' lcov-integration.info || true)
+          if [[ "$TOTAL" -eq 0 ]]; then
+            echo "::error::No coverage data found in lcov-integration.info"
+            exit 1
+          fi
+          PCT=$(awk "BEGIN { printf \"%.1f\", ($COVERED / $TOTAL) * 100 }")
+          echo "Integration line coverage: ${PCT}% (threshold: ${THRESHOLD}%)"
+          awk "BEGIN { exit (${PCT} < ${THRESHOLD}) ? 1 : 0 }" || {
+            echo "::error::Integration coverage ${PCT}% is below the required threshold of ${THRESHOLD}%"
+            exit 1
+          }
+
+      - name: Check Codecov token availability
+        id: codecov_gate
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$CODECOV_TOKEN" ]]; then
+            if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+              echo "::error::CODECOV_TOKEN secret is required for push coverage uploads."
+              exit 1
+            fi
+            echo "CODECOV_TOKEN not available (likely fork PR); skipping upload."
+            echo "skip_upload=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip_upload=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload coverage to Codecov
+        if: steps.codecov_gate.outputs.skip_upload != 'true'
+        uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: lcov-integration.info
+          flags: ${{ inputs.codecov-flags }}
+          fail_ci_if_error: true
+          verbose: true

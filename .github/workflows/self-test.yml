@@ -125,6 +125,21 @@ jobs:
       # callers.
       coverage-threshold: 80
 
+  integration-coverage:
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/rust-integration-coverage.yml
+    with:
+      working-directory: examples/hello
+      # examples/hello has no #[ignore]-tagged tests, so --include-ignored
+      # is a no-op here — this self-test only exercises the workflow
+      # plumbing (lcov-integration.info generation, threshold-parsing
+      # logic, Codecov "integration" flag), not a real convention-(a)
+      # integration suite. coverage-threshold: 0 keeps this a smoke test
+      # instead of a spurious failure with nothing ignored to count.
+      coverage-threshold: 0
+
   bench:
     permissions:
       contents: read
