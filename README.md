@@ -26,7 +26,8 @@ Replace `<sha>` with the commit SHA corresponding to the desired release tag. Av
 | `rust-test.yml` | `cargo test` | `toolchain`, `working-directory`, `test-args`, `timeout-minutes` |
 | `rust-build.yml` | Matrix build across Rust versions and OS | `rust-versions` (JSON), `os-list` (JSON), `working-directory`, `build-args` |
 | `rust-security.yml` | `cargo-audit` CVE scan (schedule weekly in caller) | `toolchain`, `working-directory`, `ignore-advisories` |
-| `rust-coverage.yml` | `cargo-llvm-cov` + Codecov upload | `toolchain`, `working-directory`, `coverage-args`, `coverage-threshold`, `codecov-flags`; secret `CODECOV_TOKEN` |
+| `rust-coverage.yml` | `cargo-llvm-cov` + Codecov upload (unit tests) | `toolchain`, `working-directory`, `coverage-args`, `coverage-threshold`, `codecov-flags`; secret `CODECOV_TOKEN` |
+| `rust-integration-coverage.yml` | `cargo-llvm-cov --include-ignored` + Codecov upload (integration tests), gated as a separate metric from unit coverage | `toolchain`, `working-directory`, `coverage-args`, `coverage-threshold`, `codecov-flags`; secret `CODECOV_TOKEN` |
 | `rust-container.yml` | Container image build (podman/docker) + smoke test | `image-name` (required), `containerfile`, `context`, `build-args` |
 | `rust-deny.yml` | `cargo-deny` license/ban/advisory/source checks | `working-directory`, `checks` |
 | `rust-docs.yml` | `cargo doc` with `RUSTDOCFLAGS=-D warnings` | `toolchain`, `working-directory`, `doc-args` |
@@ -106,6 +107,24 @@ jobs:
       working-directory: app
       coverage-threshold: 80
       codecov-flags: unit
+    secrets:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+```
+
+### Integration coverage with Codecov
+
+`#[ignore]`-tagged tests colocated with the crate under test (convention (a) —
+see e.g. the rust-lambda project template) are the primary target. Runs
+`--include-ignored --test-threads=1` by default and uploads to a separate
+Codecov flag so unit and integration floors are tracked independently.
+
+```yaml
+  integration-coverage:
+    uses: ffreis/ffreis-platform-workflows-rust/.github/workflows/rust-integration-coverage.yml@<sha> # v1.x.y
+    with:
+      working-directory: app
+      coverage-threshold: 75
+      codecov-flags: integration
     secrets:
       CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 ```

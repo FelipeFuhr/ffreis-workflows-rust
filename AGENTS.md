@@ -1,8 +1,9 @@
 # Agent Context
 
 **This repo:** `ffreis-workflows-rust` — reusable GitHub Actions workflow library for
-Rust projects. Covers fmt, clippy, test, matrix builds, cargo-audit, coverage,
-container build, cargo-deny, docs, MSRV check, benchmarks, and Miri.
+Rust projects. Covers fmt, clippy, test, matrix builds, cargo-audit, unit and
+integration coverage, mutation testing, container build, cargo-deny, docs, MSRV
+check, benchmarks, and Miri.
 
 ## Non-obvious rules (read before changing anything)
 
@@ -48,7 +49,8 @@ container build, cargo-deny, docs, MSRV check, benchmarks, and Miri.
    `rust-coverage.yml`, `rust-deny.yml`, `rust-docs.yml`, `rust-lint.yml`,
    `rust-mutation.yml`, `rust-test.yml`, `rust-build.yml` in #54/#56/#57; later
    extended to `rust-bench.yml`, `rust-miri.yml`, `rust-msrv.yml`,
-   `rust-proptest.yml`, `rust-quick-checks.yml`, `rust-security.yml`). When set,
+   `rust-proptest.yml`, `rust-quick-checks.yml`, `rust-security.yml`,
+   `rust-integration-coverage.yml`). When set,
    a "Configure git for private cargo dependencies" step (right after checkout)
    runs `git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf
    "https://github.com/"` and sets `CARGO_NET_GIT_FETCH_WITH_CLI=true` — required
@@ -72,8 +74,9 @@ container build, cargo-deny, docs, MSRV check, benchmarks, and Miri.
 
 9. **`cargo-build-jobs` input (default `"4"`) caps `CARGO_BUILD_JOBS`** on every
    reusable workflow that compiles Rust source: `rust-build.yml`, `rust-test.yml`,
-   `rust-docs.yml`, `rust-mutation.yml`, `rust-coverage.yml`, `rust-bench.yml`,
-   `rust-miri.yml`, `rust-proptest.yml`, `rust-msrv.yml`, `rust-lint.yml` (clippy
+   `rust-docs.yml`, `rust-mutation.yml`, `rust-coverage.yml`,
+   `rust-integration-coverage.yml`, `rust-bench.yml`, `rust-miri.yml`,
+   `rust-proptest.yml`, `rust-msrv.yml`, `rust-lint.yml` (clippy
    is a full compile), `rust-quick-checks.yml` (its clippy step), and
    `rust-sonar.yml` (its llvm-cov build). Set as a job-level `env:` so it applies
    to every step. Prevents rustc's default full-core parallelism from
@@ -96,6 +99,35 @@ container build, cargo-deny, docs, MSRV check, benchmarks, and Miri.
     `Cargo.lock` (only binaries/Lambdas commit it), so an unconditional
     `--locked` broke every library caller. Do not hardcode `--locked`
     unconditionally again; detect with `[ -f Cargo.lock ] && locked_arr=("--locked")`.
+
+11. **`rust-integration-coverage.yml` is a SEPARATE metric from `rust-coverage.yml`,
+    not a merge of the two.** It runs `cargo llvm-cov ... -- --include-ignored
+    --test-threads=1` to a distinct `lcov-integration.info` file, gated by its own
+    `coverage-threshold` input, uploaded to Codecov under its own `codecov-flags`
+    (default `integration` vs. the unit workflow's `unit`) so the two floors can be
+    enforced and tracked independently. It targets convention (a) — `#[ignore]`-tagged
+    tests colocated in the crate under test (see the rust-lambda project template) —
+    as the primary path; convention (b) (a dedicated `integration-tests` workspace
+    member, see a private consumer's `lambdas/integration-tests/`) also works
+    unmodified since `--include-ignored` is a no-op with nothing ignored and
+    `--workspace` already covers the extra member. `--test-threads=1` is the
+    workflow default (not just a caller convention) because integration suites
+    commonly share fixtures/DB state/env vars that break under parallel execution.
+
+12. **`rust-mutation.yml`'s `mutants-args` default (`''`) mutates the WHOLE
+    workspace** — every crate, not just the one under review. This is the exact
+    failure mode that has filled the workspace's build machine's disk before.
+    Multi-crate callers MUST pass `-p <crate-name>` (or run a matrix, one job per
+    crate). The job itself now prints a `::warning::` (not a failure — a rollout
+    safety net, not a policy gate) when `mutants-args` is empty AND the checked-out
+    `Cargo.toml` declares a multi-member `[workspace]`, detected via `cargo
+    metadata --no-deps` + `jq` (falls back to a `Cargo.toml` text scan if either is
+    unavailable). Do NOT change the default without a deliberate, separately-flagged
+    migration — single-crate callers rely on the current unscoped behavior being a
+    no-op for them. There is no `packages` input on this workflow; the only
+    (and correct) scoping mechanism is `mutants-args: '-p <crate>'` — some callers
+    have historically passed an invalid `packages:` key that GitHub Actions
+    silently drops (not a supported input; fix at the caller, not here).
 
 ## Structure
 
