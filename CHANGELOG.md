@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.3.0](https://github.com/FelipeFuhr/ffreis-workflows-rust/compare/v1.2.1...v1.3.0) (2026-08-07)
+
+
+### Features
+
+* add self-hosted runner input across remaining rust-*.yml workflows ([#61](https://github.com/FelipeFuhr/ffreis-workflows-rust/issues/61)) ([489ab8f](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/489ab8ff64368670d84daf3f0c92f8cf0c152ea8))
+* **rust:** add integration-coverage workflow + mutation disk-safety guard ([#71](https://github.com/FelipeFuhr/ffreis-workflows-rust/issues/71)) ([a9176e8](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/a9176e8abdc63c60617fbfd67f780554287188b8))
+* **rust:** build-wrapper + opt-in affected-only-on-push for constrained runners ([#60](https://github.com/FelipeFuhr/ffreis-workflows-rust/issues/60)) ([84f900e](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/84f900e5a218b370e335808984555ccfc8d751e0))
+* **rust:** complete PRIVATE_DEPS_TOKEN coverage across cargo workflows ([#69](https://github.com/FelipeFuhr/ffreis-workflows-rust/issues/69)) ([231bccb](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/231bccb36090c10d03582460ac99dbadad281ae2))
+* **semgrep:** replace Docker-container semgrep-action with native CLI ([#62](https://github.com/FelipeFuhr/ffreis-workflows-rust/issues/62)) ([4765527](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/47655272bbc8162af0cf92f2eb2d105120d36ee3))
+
+
+### Bug Fixes
+
+* **ci:** mirror missing id-token:write on 5 self-test/CI caller jobs ([#70](https://github.com/FelipeFuhr/ffreis-workflows-rust/issues/70)) ([d1453f4](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/d1453f48d844436e20e177f4b15f4c3fd102bea8))
+* **rust:** cap CARGO_BUILD_JOBS and auto-detect --locked ([#64](https://github.com/FelipeFuhr/ffreis-workflows-rust/issues/64)) ([9545e1a](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/9545e1a2c1e7ba88096bae1c5808ac0fab2eb6f1))
+* **rust:** extend PRIVATE_DEPS_TOKEN auth to remaining cargo workflows ([#63](https://github.com/FelipeFuhr/ffreis-workflows-rust/issues/63)) ([b3fee9b](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/b3fee9bbf0f9b9d6927658bf851955bf797d3bea))
+* **rust:** force git-fetch-with-cli for private cargo deps ([#56](https://github.com/FelipeFuhr/ffreis-workflows-rust/issues/56)) ([c23893e](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/c23893e5610332226c71b2ec52e6658372c38c1c))
+* **rust:** support optional private-deps-token for private cargo git deps ([#54](https://github.com/FelipeFuhr/ffreis-workflows-rust/issues/54)) ([f294fd2](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/f294fd2e793093c2e68e65cd57bbc3167fd37388))
+* **rust:** support PRIVATE_DEPS_TOKEN in rust-build.yml ([#57](https://github.com/FelipeFuhr/ffreis-workflows-rust/issues/57)) ([3e2fcf5](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/3e2fcf57bb07bae6346db12d59579aa06af0250a))
+
 ## [1.2.1](https://github.com/FelipeFuhr/ffreis-workflows-rust/compare/v1.2.0...v1.2.1) (2026-06-26)
 
 
