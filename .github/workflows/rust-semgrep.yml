@@ -22,10 +22,10 @@ on:
         default: false
       runner:
         description: |
-          JSON-encoded runner label(s). Default: GitHub-hosted ubuntu-latest.
+          JSON-encoded runner label(s). Default: self-hosted [self-hosted, local]. Pass '["ubuntu-latest"]' for GitHub-hosted.
         required: false
         type: string
-        default: '["ubuntu-latest"]'
+        default: '["self-hosted","local"]'
 
 jobs:
   semgrep:

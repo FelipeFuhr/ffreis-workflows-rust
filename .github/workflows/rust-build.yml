@@ -14,7 +14,7 @@ on:
         # callers opt in by passing os-list (e.g. a manual workflow_dispatch).
         # Do NOT add "macos-latest" to this default — it hits every caller's
         # push/PR flow at 10x (CI cost incident 2026-06).
-        default: '["ubuntu-latest"]'
+        default: '["self-hosted","local"]'
       working-directory:
         description: "Directory containing the Cargo workspace"
         type: string
