@@ -25,3 +25,7 @@ jobs:
       config-file: .release-please-config.json
       manifest-file: .release-please-manifest.json
       target-branch: main
+      # Public repo: self-hosted runners are structurally unavailable (GitHub
+      # blocks them by default on public repos; the fleet self-hosted pool is
+      # also org-scoped to ffreis-org). Pin explicitly.
+      runner: '["ubuntu-latest"]'

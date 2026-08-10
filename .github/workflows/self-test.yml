@@ -18,6 +18,13 @@ on:
 #
 # rust-miri uses --lib to avoid compiling the Criterion benchmark harness
 # under Miri (Criterion uses features incompatible with the Miri interpreter).
+#
+# All jobs below pin runner (or os-list, for rust-build.yml) explicitly to
+# ubuntu-latest: this repo is PUBLIC, so self-hosted runners are structurally
+# unavailable (GitHub blocks them by default on public repos, and the fleet's
+# self-hosted pool is org-scoped to ffreis-org anyway) even though the
+# reusable workflows now default that input to self-hosted for fleet
+# consumers. Without an explicit override here, these jobs queue forever.
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -39,6 +46,8 @@ jobs:
       languages: actions
       source-root: .
       upload-sarif: false
+      # Public repo: self-hosted structurally unavailable — pin explicitly.
+      runner: '["ubuntu-latest"]'
 
   fmt:
     permissions:
@@ -46,6 +55,8 @@ jobs:
     uses: ./.github/workflows/rust-fmt.yml
     with:
       working-directory: examples/hello
+      # Public repo: self-hosted structurally unavailable — pin explicitly.
+      runner: '["ubuntu-latest"]'
 
   lint:
     permissions:
@@ -54,6 +65,8 @@ jobs:
     uses: ./.github/workflows/rust-lint.yml
     with:
       working-directory: examples/hello
+      # Public repo: self-hosted structurally unavailable — pin explicitly.
+      runner: '["ubuntu-latest"]'
 
   quick-checks:
     permissions:
@@ -62,6 +75,8 @@ jobs:
     uses: ./.github/workflows/rust-quick-checks.yml
     with:
       working-directory: examples/hello
+      # Public repo: self-hosted structurally unavailable — pin explicitly.
+      runner: '["ubuntu-latest"]'
 
   affected:
     permissions:
@@ -69,6 +84,8 @@ jobs:
     uses: ./.github/workflows/rust-affected.yml
     with:
       working-directory: examples/hello
+      # Public repo: self-hosted structurally unavailable — pin explicitly.
+      runner: '["ubuntu-latest"]'
 
   test:
     permissions:
@@ -80,6 +97,8 @@ jobs:
       # Exercise the nextest path (incl. the separate doctest run) so a
       # regression in that branch breaks self-test, not a downstream caller.
       nextest: true
+      # Public repo: self-hosted structurally unavailable — pin explicitly.
+      runner: '["ubuntu-latest"]'
 
   build:
     permissions:
@@ -88,6 +107,10 @@ jobs:
     uses: ./.github/workflows/rust-build.yml
     with:
       working-directory: examples/hello
+      # Public repo: self-hosted structurally unavailable. rust-build.yml's
+      # runner-selection input is named os-list (matrix), not runner — pin
+      # explicitly, same reason as the runner: overrides above.
+      os-list: '["ubuntu-latest"]'
 
   docs:
     permissions:
@@ -96,6 +119,8 @@ jobs:
     uses: ./.github/workflows/rust-docs.yml
     with:
       working-directory: examples/hello
+      # Public repo: self-hosted structurally unavailable — pin explicitly.
+      runner: '["ubuntu-latest"]'
 
   security:
     permissions:
@@ -103,6 +128,8 @@ jobs:
     uses: ./.github/workflows/rust-security.yml
     with:
       working-directory: examples/hello
+      # Public repo: self-hosted structurally unavailable — pin explicitly.
+      runner: '["ubuntu-latest"]'
 
   deny:
     permissions:
@@ -110,6 +137,8 @@ jobs:
     uses: ./.github/workflows/rust-deny.yml
     with:
       working-directory: examples/hello
+      # Public repo: self-hosted structurally unavailable — pin explicitly.
+      runner: '["ubuntu-latest"]'
 
   coverage:
     permissions:
@@ -124,6 +153,8 @@ jobs:
       # would break self-test instead of silently shipping to downstream
       # callers.
       coverage-threshold: 80
+      # Public repo: self-hosted structurally unavailable — pin explicitly.
+      runner: '["ubuntu-latest"]'
 
   integration-coverage:
     permissions:
@@ -139,6 +170,8 @@ jobs:
       # integration suite. coverage-threshold: 0 keeps this a smoke test
       # instead of a spurious failure with nothing ignored to count.
       coverage-threshold: 0
+      # Public repo: self-hosted structurally unavailable — pin explicitly.
+      runner: '["ubuntu-latest"]'
 
   bench:
     permissions:
@@ -146,6 +179,8 @@ jobs:
     uses: ./.github/workflows/rust-bench.yml
     with:
       working-directory: examples/hello
+      # Public repo: self-hosted structurally unavailable — pin explicitly.
+      runner: '["ubuntu-latest"]'
 
   msrv:
     permissions:
@@ -154,6 +189,8 @@ jobs:
     with:
       msrv: "1.88.0"
       working-directory: examples/hello
+      # Public repo: self-hosted structurally unavailable — pin explicitly.
+      runner: '["ubuntu-latest"]'
 
   miri:
     permissions:
@@ -162,6 +199,8 @@ jobs:
     with:
       working-directory: examples/hello
       miri-args: --lib
+      # Public repo: self-hosted structurally unavailable — pin explicitly.
+      runner: '["ubuntu-latest"]'
 
   mutation:
     permissions:
@@ -173,6 +212,8 @@ jobs:
       # 80; the previous 50 was too permissive to detect regressions in
       # the mutation gating logic itself.
       threshold: 80
+      # Public repo: self-hosted structurally unavailable — pin explicitly.
+      runner: '["ubuntu-latest"]'
 
   proptest:
     permissions:
@@ -186,6 +227,8 @@ jobs:
       # plumbing itself).
       proptest-cases: 256
       timeout-minutes: 10
+      # Public repo: self-hosted structurally unavailable — pin explicitly.
+      runner: '["ubuntu-latest"]'
 
   semgrep:
     permissions:
@@ -193,6 +236,8 @@ jobs:
     uses: ./.github/workflows/rust-semgrep.yml
     with:
       working-directory: examples/hello
+      # Public repo: self-hosted structurally unavailable — pin explicitly.
+      runner: '["ubuntu-latest"]'
 
   sonar:
     if: vars.SONAR_ENABLED == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
@@ -201,6 +246,8 @@ jobs:
     uses: ./.github/workflows/rust-sonar.yml
     with:
       working-directory: examples/hello
+      # Public repo: self-hosted structurally unavailable — pin explicitly.
+      runner: '["ubuntu-latest"]'
     secrets:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
@@ -211,3 +258,7 @@ jobs:
     with:
       image-name: hello-example
       context: examples/hello
+      # Public repo: self-hosted structurally unavailable — pin explicitly
+      # (rust-container.yml's default is still ubuntu-latest, but pin
+      # anyway for consistency and to survive a future default change).
+      runner: '["ubuntu-latest"]'
