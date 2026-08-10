@@ -1,1 +1,31 @@
-şÙ©ıÉZ¹×µÓM?™çbi÷ëz+,yÊ'všèç-³÷×}¼ogøwNë¶úwßkuí¯våïìr¶­rZwúŞ•æ¬{)¥o®
+# Workflow: release-please for aggregator
+# This workflow enables automatic releases using release-please for this workflow aggregator repo.
+
+name: Release Please
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release-please:
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    uses: FelipeFuhr/ffreis-workflows-general/.github/workflows/general-release-please.yml@287f836a726a35af37bd24561fc687f66eaeb92f # v1.7.0
+    with:
+      dry-run: false
+      config-file: .release-please-config.json
+      manifest-file: .release-please-manifest.json
+      target-branch: main
+      # Public repo: self-hosted runners are structurally unavailable (GitHub
+      # blocks them by default on public repos; the fleet self-hosted pool is
+      # also org-scoped to ffreis-org). Pin explicitly.
+      runner: '["ubuntu-latest"]'

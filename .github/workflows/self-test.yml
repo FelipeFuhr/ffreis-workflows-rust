@@ -1,1 +1,264 @@
-şÙ©ıÉZ¹×µÓM?™çbi÷ëz+,yÊ'všèç-³÷×}¼ogøwNë¶úwßkuí¯våïìr¶­rZwû•û^²Ü¦•¾¸
+name: Self Test
+
+on:
+  push:
+    branches: [main]
+
+# Validates that every workflow defined in this library functions correctly
+# against the minimal example app in examples/hello/.
+#
+# rust-sonar requires SONAR_TOKEN to be configured in the repository. The job
+# is skipped on fork pull requests (secrets are not available to forks), but
+# runs on all other events and fails if the token is absent.
+#
+# rust-coverage requires CODECOV_TOKEN to be configured for push events;
+# when the token is missing, coverage runs on push will fail rather than
+# silently skipping the upload. Ensure CODECOV_TOKEN is set in repository
+# or organization secrets before enabling this self-test workflow.
+#
+# rust-miri uses --lib to avoid compiling the Criterion benchmark harness
+# under Miri (Criterion uses features incompatible with the Miri interpreter).
+#
+# All jobs below pin runner (or os-list, for rust-build.yml) explicitly to
+# ubuntu-latest: this repo is PUBLIC, so self-hosted runners are structurally
+# unavailable (GitHub blocks them by default on public repos, and the fleet's
+# self-hosted pool is org-scoped to ffreis-org anyway) even though the
+# reusable workflows now default that input to self-hosted for fleet
+# consumers. Without an explicit override here, these jobs queue forever.
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  workflows-policy:
+    permissions:
+      contents: read
+    uses: FelipeFuhr/ffreis-workflows-general/.github/workflows/general-workflows-policy.yml@287f836a726a35af37bd24561fc687f66eaeb92f # v1.7.0
+
+  codeql-actions:
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    uses: FelipeFuhr/ffreis-workflows-general/.github/workflows/general-codeql.yml@287f836a726a35af37bd24561fc687f66eaeb92f # v1.7.0
+    with:
+      languages: actions
+      source-root: .
+      upload-sarif: false
+      # Public repo: self-hosted structurally unavailable â€” pin explicitly.
+      runner: '["ubuntu-latest"]'
+
+  fmt:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/rust-fmt.yml
+    with:
+      working-directory: examples/hello
+      # Public repo: self-hosted structurally unavailable â€” pin explicitly.
+      runner: '["ubuntu-latest"]'
+
+  lint:
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/rust-lint.yml
+    with:
+      working-directory: examples/hello
+      # Public repo: self-hosted structurally unavailable â€” pin explicitly.
+      runner: '["ubuntu-latest"]'
+
+  quick-checks:
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/rust-quick-checks.yml
+    with:
+      working-directory: examples/hello
+      # Public repo: self-hosted structurally unavailable â€” pin explicitly.
+      runner: '["ubuntu-latest"]'
+
+  affected:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/rust-affected.yml
+    with:
+      working-directory: examples/hello
+      # Public repo: self-hosted structurally unavailable â€” pin explicitly.
+      runner: '["ubuntu-latest"]'
+
+  test:
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/rust-test.yml
+    with:
+      working-directory: examples/hello
+      # Exercise the nextest path (incl. the separate doctest run) so a
+      # regression in that branch breaks self-test, not a downstream caller.
+      nextest: true
+      # Public repo: self-hosted structurally unavailable â€” pin explicitly.
+      runner: '["ubuntu-latest"]'
+
+  build:
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/rust-build.yml
+    with:
+      working-directory: examples/hello
+      # Public repo: self-hosted structurally unavailable. rust-build.yml's
+      # runner-selection input is named os-list (matrix), not runner â€” pin
+      # explicitly, same reason as the runner: overrides above.
+      os-list: '["ubuntu-latest"]'
+
+  docs:
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/rust-docs.yml
+    with:
+      working-directory: examples/hello
+      # Public repo: self-hosted structurally unavailable â€” pin explicitly.
+      runner: '["ubuntu-latest"]'
+
+  security:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/rust-security.yml
+    with:
+      working-directory: examples/hello
+      # Public repo: self-hosted structurally unavailable â€” pin explicitly.
+      runner: '["ubuntu-latest"]'
+
+  deny:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/rust-deny.yml
+    with:
+      working-directory: examples/hello
+      # Public repo: self-hosted structurally unavailable â€” pin explicitly.
+      runner: '["ubuntu-latest"]'
+
+  coverage:
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/rust-coverage.yml
+    with:
+      working-directory: examples/hello
+      # examples/hello is a 187-LOC validator with comprehensive tests;
+      # it should comfortably exceed 80. Gating here exercises the
+      # coverage-threshold input itself so a regression in that input
+      # would break self-test instead of silently shipping to downstream
+      # callers.
+      coverage-threshold: 80
+      # Public repo: self-hosted structurally unavailable â€” pin explicitly.
+      runner: '["ubuntu-latest"]'
+
+  integration-coverage:
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/rust-integration-coverage.yml
+    with:
+      working-directory: examples/hello
+      # examples/hello has no #[ignore]-tagged tests, so --include-ignored
+      # is a no-op here â€” this self-test only exercises the workflow
+      # plumbing (lcov-integration.info generation, threshold-parsing
+      # logic, Codecov "integration" flag), not a real convention-(a)
+      # integration suite. coverage-threshold: 0 keeps this a smoke test
+      # instead of a spurious failure with nothing ignored to count.
+      coverage-threshold: 0
+      # Public repo: self-hosted structurally unavailable â€” pin explicitly.
+      runner: '["ubuntu-latest"]'
+
+  bench:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/rust-bench.yml
+    with:
+      working-directory: examples/hello
+      # Public repo: self-hosted structurally unavailable â€” pin explicitly.
+      runner: '["ubuntu-latest"]'
+
+  msrv:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/rust-msrv.yml
+    with:
+      msrv: "1.88.0"
+      working-directory: examples/hello
+      # Public repo: self-hosted structurally unavailable â€” pin explicitly.
+      runner: '["ubuntu-latest"]'
+
+  miri:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/rust-miri.yml
+    with:
+      working-directory: examples/hello
+      miri-args: --lib
+      # Public repo: self-hosted structurally unavailable â€” pin explicitly.
+      runner: '["ubuntu-latest"]'
+
+  mutation:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/rust-mutation.yml
+    with:
+      working-directory: examples/hello
+      # examples/hello is small enough that mutation should easily exceed
+      # 80; the previous 50 was too permissive to detect regressions in
+      # the mutation gating logic itself.
+      threshold: 80
+      # Public repo: self-hosted structurally unavailable â€” pin explicitly.
+      runner: '["ubuntu-latest"]'
+
+  proptest:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/rust-proptest.yml
+    with:
+      working-directory: examples/hello
+      # Low case count for the self-test (examples/hello has no real
+      # property tests yet â€” the workflow emits a warning + skips if it
+      # finds no proptest! macros, so this is mostly testing the workflow
+      # plumbing itself).
+      proptest-cases: 256
+      timeout-minutes: 10
+      # Public repo: self-hosted structurally unavailable â€” pin explicitly.
+      runner: '["ubuntu-latest"]'
+
+  semgrep:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/rust-semgrep.yml
+    with:
+      working-directory: examples/hello
+      # Public repo: self-hosted structurally unavailable â€” pin explicitly.
+      runner: '["ubuntu-latest"]'
+
+  sonar:
+    if: vars.SONAR_ENABLED == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
+    permissions:
+      contents: read
+    uses: ./.github/workflows/rust-sonar.yml
+    with:
+      working-directory: examples/hello
+      # Public repo: self-hosted structurally unavailable â€” pin explicitly.
+      runner: '["ubuntu-latest"]'
+    secrets:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  container:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/rust-container.yml
+    with:
+      image-name: hello-example
+      context: examples/hello
+      # Public repo: self-hosted structurally unavailable â€” pin explicitly
+      # (rust-container.yml's default is still ubuntu-latest, but pin
+      # anyway for consistency and to survive a future default change).
+      runner: '["ubuntu-latest"]'

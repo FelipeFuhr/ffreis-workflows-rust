@@ -1,1 +1,225 @@
-şÙ©ıÉZ¹×µÓM?™çbi÷ëz+,yÊ'všèç-³÷×}¼ogøwNë¶úwßkuí¯våïìr¶­rZw÷"Êi[ë
+name: CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [main]
+
+# Validates that every workflow defined in this library functions correctly
+# against the minimal example app in examples/hello/.
+#
+# rust-sonar requires SONAR_TOKEN to be configured in the repository. The job
+# is skipped on fork pull requests (secrets are not available to forks), but
+# runs on all other events and fails if the token is absent.
+#
+# rust-coverage requires CODECOV_TOKEN to be configured for push events;
+# when the token is missing, coverage runs on push will fail rather than
+# silently skipping the upload. Ensure CODECOV_TOKEN is set in repository
+# or organization secrets before enabling this self-test workflow.
+#
+# rust-miri uses --lib to avoid compiling the Criterion benchmark harness
+# under Miri (Criterion uses features incompatible with the Miri interpreter).
+#
+# All jobs below pin runner (or os-list, for rust-build.yml) explicitly to
+# ubuntu-latest: this repo is PUBLIC, so self-hosted runners are structurally
+# unavailable (GitHub blocks them by default on public repos, and the fleet's
+# self-hosted pool is org-scoped to ffreis-org anyway) even though the
+# reusable workflows now default that input to self-hosted for fleet
+# consumers. Without an explicit override here, these jobs queue forever.
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci-local-coverage:
+    permissions:
+      contents: read
+    uses: FelipeFuhr/ffreis-workflows-general/.github/workflows/general-ci-local-coverage.yml@287f836a726a35af37bd24561fc687f66eaeb92f # v1.7.0
+    with:
+      mode: defines
+      enforce: true
+
+  workflows-policy:
+    permissions:
+      contents: read
+    uses: FelipeFuhr/ffreis-workflows-general/.github/workflows/general-workflows-policy.yml@287f836a726a35af37bd24561fc687f66eaeb92f # v1.7.0
+
+  codeql-actions:
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    uses: FelipeFuhr/ffreis-workflows-general/.github/workflows/general-codeql.yml@287f836a726a35af37bd24561fc687f66eaeb92f # v1.7.0
+    with:
+      languages: actions
+      source-root: .
+      upload-sarif: false
+      # Public repo: self-hosted structurally unavailable â€” pin explicitly.
+      runner: '["ubuntu-latest"]'
+
+  fmt:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/rust-fmt.yml
+    with:
+      working-directory: examples/hello
+      # Public repo: self-hosted structurally unavailable â€” pin explicitly.
+      runner: '["ubuntu-latest"]'
+
+  lint:
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/rust-lint.yml
+    with:
+      working-directory: examples/hello
+      # Public repo: self-hosted structurally unavailable â€” pin explicitly.
+      runner: '["ubuntu-latest"]'
+
+  test:
+    if: ${{ !github.event.pull_request.draft }}
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/rust-test.yml
+    with:
+      working-directory: examples/hello
+      # Public repo: self-hosted structurally unavailable â€” pin explicitly.
+      runner: '["ubuntu-latest"]'
+
+  build:
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/rust-build.yml
+    with:
+      working-directory: examples/hello
+      # Public repo: self-hosted structurally unavailable. rust-build.yml's
+      # runner-selection input is named os-list (matrix), not runner â€” pin
+      # explicitly, same reason as the runner: overrides above.
+      os-list: '["ubuntu-latest"]'
+
+  docs:
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/rust-docs.yml
+    with:
+      working-directory: examples/hello
+      # Public repo: self-hosted structurally unavailable â€” pin explicitly.
+      runner: '["ubuntu-latest"]'
+
+  security:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/rust-security.yml
+    with:
+      working-directory: examples/hello
+      # Public repo: self-hosted structurally unavailable â€” pin explicitly.
+      runner: '["ubuntu-latest"]'
+
+  deny:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/rust-deny.yml
+    with:
+      working-directory: examples/hello
+      # Public repo: self-hosted structurally unavailable â€” pin explicitly.
+      runner: '["ubuntu-latest"]'
+
+  coverage:
+    if: ${{ !github.event.pull_request.draft }}
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/rust-coverage.yml
+    with:
+      working-directory: examples/hello
+      # Public repo: self-hosted structurally unavailable â€” pin explicitly.
+      runner: '["ubuntu-latest"]'
+
+  integration-coverage:
+    if: ${{ !github.event.pull_request.draft }}
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/rust-integration-coverage.yml
+    with:
+      working-directory: examples/hello
+      # Public repo: self-hosted structurally unavailable â€” pin explicitly.
+      runner: '["ubuntu-latest"]'
+
+  bench:
+    if: ${{ !github.event.pull_request.draft }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/rust-bench.yml
+    with:
+      working-directory: examples/hello
+      # Public repo: self-hosted structurally unavailable â€” pin explicitly.
+      runner: '["ubuntu-latest"]'
+
+  msrv:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/rust-msrv.yml
+    with:
+      msrv: "1.88.0"
+      working-directory: examples/hello
+      # Public repo: self-hosted structurally unavailable â€” pin explicitly.
+      runner: '["ubuntu-latest"]'
+
+  miri:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/rust-miri.yml
+    with:
+      working-directory: examples/hello
+      miri-args: --lib
+      # Public repo: self-hosted structurally unavailable â€” pin explicitly.
+      runner: '["ubuntu-latest"]'
+
+  mutation:
+    if: ${{ !github.event.pull_request.draft }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/rust-mutation.yml
+    with:
+      working-directory: examples/hello
+      threshold: 50
+      # Public repo: self-hosted structurally unavailable â€” pin explicitly.
+      runner: '["ubuntu-latest"]'
+
+  semgrep:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/rust-semgrep.yml
+    with:
+      working-directory: examples/hello
+      # Public repo: self-hosted structurally unavailable â€” pin explicitly.
+      runner: '["ubuntu-latest"]'
+
+  sonar:
+    if: vars.SONAR_ENABLED == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
+    permissions:
+      contents: read
+    uses: ./.github/workflows/rust-sonar.yml
+    with:
+      working-directory: examples/hello
+      # Public repo: self-hosted structurally unavailable â€” pin explicitly.
+      runner: '["ubuntu-latest"]'
+    secrets:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  container:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/rust-container.yml
+    with:
+      image-name: hello-example
+      context: examples/hello
+      # Public repo: self-hosted structurally unavailable â€” pin explicitly
+      # (rust-container.yml's default is still ubuntu-latest, but pin
+      # anyway for consistency and to survive a future default change).
+      runner: '["ubuntu-latest"]'

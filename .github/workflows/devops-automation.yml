@@ -1,1 +1,56 @@
-şÙ©ıÉZ¹×µÓM?™çbi÷ëz+,yÊ'všèç-³÷×}¼ogøwNë¶úwßkuí¯våïìr¶­rZw÷^¾Šljëh™«b¢|¦•¾¸
+name: DevOps / Automation
+
+on:
+  schedule:
+    - cron: "55 4 8 * *"  # monthly scattered (was: 0 3 * * 0)
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  scorecard:
+    if: vars.SCORECARD_ENABLED == 'true' && github.event_name != 'pull_request'
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+      id-token: write
+    uses: FelipeFuhr/ffreis-workflows-general/.github/workflows/general-scorecard.yml@287f836a726a35af37bd24561fc687f66eaeb92f # v1.7.0
+    with:
+      upload-sarif: true
+      # Public repo: self-hosted runners are structurally unavailable (GitHub
+      # blocks them by default on public repos; the fleet self-hosted pool is
+      # also org-scoped to ffreis-org). Pin explicitly.
+      runner: '["ubuntu-latest"]'
+
+  stale:
+    if: vars.STALE_ENABLED == 'true' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    uses: FelipeFuhr/ffreis-workflows-general/.github/workflows/general-stale.yml@287f836a726a35af37bd24561fc687f66eaeb92f # v1.7.0
+    with:
+      only: "both"
+      # Public repo: self-hosted runners are structurally unavailable â€” pin
+      # explicitly.
+      runner: '["ubuntu-latest"]'
+
+  release-please:
+    if: vars.RELEASE_PLEASE_ENABLED != 'false' && github.event_name == 'push'
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    uses: FelipeFuhr/ffreis-workflows-general/.github/workflows/general-release-please.yml@287f836a726a35af37bd24561fc687f66eaeb92f # v1.7.0
+    with:
+      target-branch: "main"
+      # Public repo: self-hosted runners are structurally unavailable â€” pin
+      # explicitly.
+      runner: '["ubuntu-latest"]'
+    secrets:
+      RELEASE_PLEASE_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
