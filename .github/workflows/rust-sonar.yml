@@ -148,14 +148,14 @@ jobs:
           PROJECT_KEY="${PROJECT_KEY_INPUT:-}"
           [ -z "$PROJECT_KEY" ] && PROJECT_KEY="${PROJECT_KEY_VAR:-}"
           if [[ -z "$PROJECT_KEY" && -f sonar-project.properties ]]; then
-            PROJECT_KEY="$(grep -E '^sonar\\.projectKey=' sonar-project.properties | head -n 1 | cut -d= -f2- || true)"
+            PROJECT_KEY="$(grep -E '^sonar[.]projectKey=' sonar-project.properties | head -n 1 | cut -d= -f2- || true)"
           fi
           [ -z "$PROJECT_KEY" ] && PROJECT_KEY="${OWNER}_${REPO}"
 
           ORGANIZATION="${ORGANIZATION_INPUT:-}"
           [ -z "$ORGANIZATION" ] && ORGANIZATION="${ORGANIZATION_VAR:-}"
           if [[ -z "$ORGANIZATION" && -f sonar-project.properties ]]; then
-            ORGANIZATION="$(grep -E '^sonar\\.organization=' sonar-project.properties | head -n 1 | cut -d= -f2- || true)"
+            ORGANIZATION="$(grep -E '^sonar[.]organization=' sonar-project.properties | head -n 1 | cut -d= -f2- || true)"
           fi
           [ -z "$ORGANIZATION" ] && ORGANIZATION="$OWNER"
 
