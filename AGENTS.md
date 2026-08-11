@@ -129,6 +129,18 @@ check, benchmarks, and Miri.
     have historically passed an invalid `packages:` key that GitHub Actions
     silently drops (not a supported input; fix at the caller, not here).
 
+13. **`CODECOV_TOKEN` is optional on EVERY trigger, push included** — in both
+    `rust-coverage.yml` and `rust-integration-coverage.yml`'s "Check Codecov
+    token availability" step. This matches the `secrets.CODECOV_TOKEN:
+    required: false` declaration on the `workflow_call` block: a missing token
+    degrades to `::warning::` + `skip_upload=true`, never `exit 1`. An earlier
+    version hard-failed the whole job with `exit 1` specifically on `push`
+    events — this broke CI on every push to `main` for every real caller in
+    the workspace, none of which had ever wired the secret (confirmed via
+    `gh secret list` across ~28 callers), including this repo's own
+    `self-test.yml`. Do not reintroduce a push-specific hard-fail without also
+    flipping the secret to `required: true` and updating every caller.
+
 ## Structure
 
 ```

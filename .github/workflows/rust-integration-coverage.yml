@@ -193,12 +193,15 @@ jobs:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
         run: |
           set -euo pipefail
+          # CODECOV_TOKEN is `required: false` on the workflow_call secrets
+          # block above — this workflow is explicitly usable without Codecov
+          # configured. Degrade gracefully on every trigger, push included:
+          # a caller that never wired the secret would otherwise hard-fail
+          # every merge to its default branch. Do not reintroduce a
+          # push-specific `exit 1` here without also making the secret
+          # required above.
           if [[ -z "$CODECOV_TOKEN" ]]; then
-            if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
-              echo "::error::CODECOV_TOKEN secret is required for push coverage uploads."
-              exit 1
-            fi
-            echo "CODECOV_TOKEN not available (likely fork PR); skipping upload."
+            echo "::warning::CODECOV_TOKEN not configured; skipping coverage upload."
             echo "skip_upload=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip_upload=false" >> "$GITHUB_OUTPUT"
