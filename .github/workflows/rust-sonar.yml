@@ -124,16 +124,40 @@ jobs:
       - name: Build Sonar extra args
         id: sonar-args
         env:
-          PROJECT_KEY: ${{ inputs.sonar-project-key || vars.SONAR_PROJECT_KEY || format('{0}_{1}', github.repository_owner, github.event.repository.name) }}
-          ORGANIZATION: ${{ inputs.sonar-organization || vars.SONAR_ORGANIZATION || github.repository_owner }}
+          # scan-fix(ci:sonar-org-precedence-dead-code): the old single-expression
+          # fallback (`inputs... || vars... || github.repository_owner`) baked the
+          # repo-owner default in at the GHA-expression level, so PROJECT_KEY/
+          # ORGANIZATION were NEVER empty by the time the shell ran — the
+          # `-z "$ORGANIZATION" && -f sonar-project.properties` check below was
+          # dead code, and a repo whose SonarCloud project lives under a
+          # different org than its current GitHub owner (e.g. a repo migrated
+          # from ffreis-org to FelipeFuhr, SonarCloud project left at
+          # organization=ffreis-org) always got the wrong org silently — same
+          # bug confirmed and fixed in python-sonar.yml. Split each fallback
+          # into its own shell-level check (matching go-sonar.yml) so the
+          # properties-file value is genuinely consulted before falling back to
+          # repo-owner-derived defaults.
+          PROJECT_KEY_INPUT: ${{ inputs.sonar-project-key }}
+          PROJECT_KEY_VAR: ${{ vars.SONAR_PROJECT_KEY }}
+          ORGANIZATION_INPUT: ${{ inputs.sonar-organization }}
+          ORGANIZATION_VAR: ${{ vars.SONAR_ORGANIZATION }}
+          OWNER: ${{ github.repository_owner }}
+          REPO: ${{ github.event.repository.name }}
         run: |
           set -euo pipefail
+          PROJECT_KEY="${PROJECT_KEY_INPUT:-}"
+          [ -z "$PROJECT_KEY" ] && PROJECT_KEY="${PROJECT_KEY_VAR:-}"
           if [[ -z "$PROJECT_KEY" && -f sonar-project.properties ]]; then
-            PROJECT_KEY="$(grep -E '^sonar\\.projectKey=' sonar-project.properties | head -n 1 | cut -d= -f2- || true)"
+            PROJECT_KEY="$(grep -E '^sonar[.]projectKey=' sonar-project.properties | head -n 1 | cut -d= -f2- || true)"
           fi
+          [ -z "$PROJECT_KEY" ] && PROJECT_KEY="${OWNER}_${REPO}"
+
+          ORGANIZATION="${ORGANIZATION_INPUT:-}"
+          [ -z "$ORGANIZATION" ] && ORGANIZATION="${ORGANIZATION_VAR:-}"
           if [[ -z "$ORGANIZATION" && -f sonar-project.properties ]]; then
-            ORGANIZATION="$(grep -E '^sonar\\.organization=' sonar-project.properties | head -n 1 | cut -d= -f2- || true)"
+            ORGANIZATION="$(grep -E '^sonar[.]organization=' sonar-project.properties | head -n 1 | cut -d= -f2- || true)"
           fi
+          [ -z "$ORGANIZATION" ] && ORGANIZATION="$OWNER"
 
           EXTRA=""
           [ -n "$PROJECT_KEY" ] && EXTRA="$EXTRA -Dsonar.projectKey=$PROJECT_KEY"
