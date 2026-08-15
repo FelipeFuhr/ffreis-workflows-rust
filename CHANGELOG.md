@@ -1,5 +1,26 @@
 # Changelog
 
+## [2.0.0](https://github.com/FelipeFuhr/ffreis-workflows-rust/compare/v1.3.0...v2.0.0) (2026-08-11)
+
+
+### ⚠ BREAKING CHANGES
+
+* **runner:** callers that rely on the implicit ubuntu-latest default now land on [self-hosted, local] instead (except rust-container.yml, unchanged).
+
+### Features
+
+* **rust:** add integration-coverage workflow + mutation disk-safety guard ([#71](https://github.com/FelipeFuhr/ffreis-workflows-rust/issues/71)) ([a9176e8](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/a9176e8abdc63c60617fbfd67f780554287188b8))
+
+
+### Bug Fixes
+
+* **ci:** mirror missing id-token:write on 5 self-test/CI caller jobs ([#70](https://github.com/FelipeFuhr/ffreis-workflows-rust/issues/70)) ([d1453f4](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/d1453f48d844436e20e177f4b15f4c3fd102bea8))
+* **ci:** pin own internal CI to ubuntu-latest — public repo can't use self-hosted ([#76](https://github.com/FelipeFuhr/ffreis-workflows-rust/issues/76)) ([b83d526](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/b83d5261fe42d74d991c5ee487d1f63f969016b9))
+* **ci:** remove redundant standalone scorecards.yml ([#75](https://github.com/FelipeFuhr/ffreis-workflows-rust/issues/75)) ([52c02df](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/52c02dfa019b6e92eefe88df3d8545ad10d359c8))
+* **examples:** unblock hello self-test (deny/audit/coverage/container) ([#77](https://github.com/FelipeFuhr/ffreis-workflows-rust/issues/77)) ([5bbc4dc](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/5bbc4dcbcd5b157dbc602a4ae18b90555f427040))
+* **runner:** default the runner input to self-hosted, not ubuntu-latest ([#74](https://github.com/FelipeFuhr/ffreis-workflows-rust/issues/74)) ([58205ac](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/58205ac301580a0b8cd31ce74df61e16eba5b237))
+* **sonar:** fix dead-code fallback that always used repo-owner org ([#78](https://github.com/FelipeFuhr/ffreis-workflows-rust/issues/78)) ([744f232](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/744f2327dfee02a7d1b7bf960613228432593b66))
+
 ## [1.3.0](https://github.com/FelipeFuhr/ffreis-workflows-rust/compare/v1.2.1...v1.3.0) (2026-08-07)
 
 
