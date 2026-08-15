@@ -39,11 +39,13 @@ jobs:
       contents: read
       actions: read
       security-events: write
-    uses: FelipeFuhr/ffreis-workflows-general/.github/workflows/general-gitleaks.yml@287f836a726a35af37bd24561fc687f66eaeb92f # v1.7.0
+    uses: FelipeFuhr/ffreis-workflows-general/.github/workflows/general-gitleaks.yml@c05b308fe568045ac1c8086436cca5011b809454 # v2.0.0
     with:
       working-directory: "."
       scan-history: true
       upload-sarif: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false }}
+      # public repo: self-hosted runners are structurally unavailable here
+      runner: '["ubuntu-latest"]'
 
   trivy-fs:
     needs: changes
@@ -56,10 +58,12 @@ jobs:
       contents: read
       actions: read
       security-events: write
-    uses: FelipeFuhr/ffreis-workflows-general/.github/workflows/general-scan-trivy-fs.yml@287f836a726a35af37bd24561fc687f66eaeb92f # v1.7.0
+    uses: FelipeFuhr/ffreis-workflows-general/.github/workflows/general-scan-trivy-fs.yml@c05b308fe568045ac1c8086436cca5011b809454 # v2.0.0
     with:
       scan-ref: "."
       upload-sarif: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false }}
+      # public repo: self-hosted runners are structurally unavailable here
+      runner: '["ubuntu-latest"]'
 
   grype-fs:
     needs: changes
@@ -72,11 +76,13 @@ jobs:
       contents: read
       actions: read
       security-events: write
-    uses: FelipeFuhr/ffreis-workflows-general/.github/workflows/general-scan-grype-fs.yml@287f836a726a35af37bd24561fc687f66eaeb92f # v1.7.0
+    uses: FelipeFuhr/ffreis-workflows-general/.github/workflows/general-scan-grype-fs.yml@c05b308fe568045ac1c8086436cca5011b809454 # v2.0.0
     with:
       path: "."
       fail-on-vuln: ${{ github.event_name != 'pull_request' }}
       upload-sarif: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false }}
+      # public repo: self-hosted runners are structurally unavailable here
+      runner: '["ubuntu-latest"]'
 
   osv:
     needs: changes
@@ -89,7 +95,9 @@ jobs:
       contents: read
       actions: read
       security-events: write
-    uses: FelipeFuhr/ffreis-workflows-general/.github/workflows/general-osv-scanner.yml@287f836a726a35af37bd24561fc687f66eaeb92f # v1.7.0
+    uses: FelipeFuhr/ffreis-workflows-general/.github/workflows/general-osv-scanner.yml@c05b308fe568045ac1c8086436cca5011b809454 # v2.0.0
     with:
       working-directory: "."
       upload-sarif: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false }}
+      # public repo: self-hosted runners are structurally unavailable here
+      runner: '["ubuntu-latest"]'
