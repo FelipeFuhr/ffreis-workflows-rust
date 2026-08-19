@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.0.1](https://github.com/FelipeFuhr/ffreis-workflows-rust/compare/v2.0.0...v2.0.1) (2026-08-19)
+
+
+### Bug Fixes
+
+* **ci:** install cargo tools as prebuilt binaries, not from source ([#84](https://github.com/FelipeFuhr/ffreis-workflows-rust/issues/84)) ([dce60a7](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/dce60a7ead96367c8e90f6b66d68d6d0b82ec1e8))
+* **ci:** route DevOps/Security jobs to ubuntu-latest ([#81](https://github.com/FelipeFuhr/ffreis-workflows-rust/issues/81)) ([9b94d9f](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/9b94d9f60991e0de06606a83a69edd827817931c))
+* **mutation:** stop the gate passing vacuously, and make it finish ([#83](https://github.com/FelipeFuhr/ffreis-workflows-rust/issues/83)) ([9430ce4](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/9430ce4131a568e43243fa07907c12aaab1ca7ac))
+
 ## [2.0.0](https://github.com/FelipeFuhr/ffreis-workflows-rust/compare/v1.3.0...v2.0.0) (2026-08-11)
 
 
