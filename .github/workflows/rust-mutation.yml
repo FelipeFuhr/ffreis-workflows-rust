@@ -179,12 +179,20 @@ jobs:
             echo "::warning title=Unscoped cargo-mutants run::mutants-args is empty ('') and this workspace declares ${member_count} member(s). The default mutates the ENTIRE workspace, which has filled CI disk before on multi-crate repos. Pass mutants-args: '-p <crate-name>' (or run one job per crate) to scope this run."
           fi
 
+      # Prebuilt binary (no from-source compile per run) — matching what
+      # rust-coverage/rust-test/rust-deny/rust-integration-coverage already do.
+      #
+      # This is load-bearing on the self-hosted fleet, not just a speedup:
+      # `cargo install <tool> --locked` compiles a large crate graph inside the
+      # runner pod, and the ci-light tier is capped at 2Gi. That OOM-kills the
+      # pod mid-step — confirmed 2026-08-19 on ffreis-job-arbiter PR #61, where
+      # `security / audit` died with "Install cargo-audit" never completing and
+      # job_pod_terminated_total{reason="OOMKilled"} recording the kill for that
+      # exact pod. Mutation would have hit the identical wall.
       - name: Install cargo-mutants
-        run: |
-          set -euo pipefail
-          if ! command -v cargo-mutants >/dev/null 2>&1; then
-            cargo install cargo-mutants --locked
-          fi
+        uses: taiki-e/install-action@25435dc8dd3baed7417e0c96d3fe89013a5b2e09 # v2.81.3
+        with:
+          tool: cargo-mutants
 
       # Establish a baseline — avoids counting slow clean-build time as test time.
       - name: Baseline test run
