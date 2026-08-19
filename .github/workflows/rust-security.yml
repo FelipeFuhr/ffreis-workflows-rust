@@ -76,10 +76,21 @@ jobs:
         with:
           workspaces: "${{ inputs.working-directory }} -> target"
 
+      # Prebuilt binary (no from-source compile per run).
+      #
+      # This is a correctness fix, not a speedup: `cargo install cargo-audit
+      # --locked` compiles a large crate graph inside the runner pod, and the
+      # ci-light tier is capped at 2Gi. Confirmed 2026-08-19 on
+      # ffreis-job-arbiter PR #61 — "Install cargo-audit" has a null conclusion
+      # (never completed) on pod gha-runner-light-b9b99475f-n26f7, and
+      # job_pod_terminated_total{reason="OOMKilled"} recorded the kill for that
+      # exact pod. `cargo audit` itself passed clean locally (194 deps, 0
+      # advisories), so the red check never meant a real advisory — it meant
+      # the installer ran the pod out of memory.
       - name: Install cargo-audit
-        run: |
-          set -euo pipefail
-          cargo install cargo-audit --locked
+        uses: taiki-e/install-action@25435dc8dd3baed7417e0c96d3fe89013a5b2e09 # v2.81.3
+        with:
+          tool: cargo-audit
 
       - name: Run cargo audit
         env:

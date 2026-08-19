@@ -8,9 +8,13 @@ name: Rust Quick Checks
 # GitHub bills every job rounded up to a whole minute and each job pays its own
 # ~30-60s runner + toolchain setup, so collapsing 3 jobs -> 1 removes two extra
 # toolchain installs + cache restores + minute-roundings. The biggest single win
-# is cargo-deny: rust-deny.yml does `cargo install cargo-deny --locked` (a
-# from-source compile) on its OWN runner with no rust-cache; folding it in lets
-# that install reuse this job's cache and toolchain.
+# is cargo-deny, which otherwise pays for its OWN runner.
+#
+# (This paragraph used to claim the win was letting cargo-deny's from-source
+# `cargo install` reuse this job's cache. That stopped being true when
+# rust-deny.yml moved to a prebuilt binary, and this file has now done the
+# same — there is no compile left to cache. The remaining saving is the extra
+# runner, toolchain setup and minute-rounding, which is still worth having.)
 #
 # clippy is itself a full compile, so it (optionally) honours the same sccache
 # S3 backend as rust-lint/rust-build. Heavy/independent jobs (test, coverage,
@@ -174,6 +178,17 @@ jobs:
           cargo clippy --all-targets --all-features "${clippy_args_arr[@]}"
 
       # --- cargo-deny (optional) ---------------------------------------------
+      # Prebuilt binary (no from-source compile per run) — a from-source
+      # install OOM-kills the 2Gi ci-light runner pod. Note this weakens the
+      # cache-sharing rationale in this file's header comment: with no compile
+      # left to cache, folding cargo-deny in here now saves the extra runner
+      # and minute-rounding, not an install.
+      - name: Install cargo-deny
+        if: ${{ inputs.run-deny }}
+        uses: taiki-e/install-action@25435dc8dd3baed7417e0c96d3fe89013a5b2e09 # v2.81.3
+        with:
+          tool: cargo-deny
+
       - name: Run cargo-deny
         id: deny
         if: ${{ inputs.run-deny }}
@@ -182,7 +197,6 @@ jobs:
           DENY_CHECKS: ${{ inputs.deny-checks }}
         run: |
           set -euo pipefail
-          cargo install cargo-deny --locked
           read -r -a deny_checks_arr <<< "${DENY_CHECKS:-}"
           cargo deny check "${deny_checks_arr[@]}"
 

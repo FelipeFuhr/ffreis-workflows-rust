@@ -106,11 +106,14 @@ jobs:
           name: ${{ inputs.coverage-artifact-name }}
           path: ${{ inputs.working-directory }}
 
+      # Prebuilt binary (no from-source compile per run) — same install path
+      # rust-coverage.yml already uses for this exact tool. A from-source
+      # compile here OOM-kills the 2Gi ci-light runner pod.
       - name: Install cargo-llvm-cov (if no artifact)
         if: inputs.coverage-artifact-name == ''
-        run: |
-          set -euo pipefail
-          cargo install cargo-llvm-cov --locked
+        uses: taiki-e/install-action@25435dc8dd3baed7417e0c96d3fe89013a5b2e09 # v2.81.3
+        with:
+          tool: cargo-llvm-cov
 
       - name: Generate coverage (if no artifact)
         if: inputs.coverage-artifact-name == ''
