@@ -34,7 +34,14 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
-    runs-on: ${{ fromJson(inputs.runner) }}
+    # PUBLIC repos are FORCED onto GitHub-hosted runners, overriding `runner`.
+    # A public repo accepts fork pull requests, and a self-hosted runner
+    # executing fork-authored code would run arbitrary code on the homelab
+    # cluster. This is the one case where honouring the caller's input would be
+    # wrong. Private repos keep whatever `runner` says (default: self-hosted).
+    # `github.event.repository.visibility` is populated for every trigger type
+    # these workflows support — same mechanism tf-sonar.yml already uses.
+    runs-on: ${{ github.event.repository.visibility == 'public' && fromJson('["ubuntu-latest"]') || fromJson(inputs.runner) }}
     defaults:
       run:
         shell: bash

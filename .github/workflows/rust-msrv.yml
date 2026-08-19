@@ -28,13 +28,21 @@ on:
         default: '["self-hosted","local"]'
       cargo-build-jobs:
         description: >-
-          Caps CARGO_BUILD_JOBS (parallel rustc compile units). Default "4"
-          matches the workspace Makefile convention — memory-safe on a
-          4.5Gi-limited self-hosted runner pod. Hosted-runner callers wanting
-          full parallelism can pass a higher value (e.g. the runner's core
-          count).
+          Caps CARGO_BUILD_JOBS (parallel rustc compile units). Default "2".
+
+          Was "4", documented as memory-safe on a 4.5Gi self-hosted pod. That
+          figure went stale — the heavy tier was resized 4.5Gi -> 2Gi -> 2.25Gi
+          -> 2.5Gi and this comment was never updated, so callers inheriting it
+          were silently over-committed. The symptom is not a build failure: the
+          runner agent shares the pod cgroup, so IT dies, surfacing as "the
+          self-hosted runner lost communication with the server" with no logs.
+
+          Measured on ffreis-rust-shared under a cgroup mirroring the heavy pod
+          (MemoryMax=2560M, no swap, 2 CPU): peak anon 2541 MB at jobs=1 —
+          99% of the limit before any parallelism. Hosted-runner callers with
+          real memory can pass a higher value (e.g. the runner's core count).
         type: string
-        default: "4"
+        default: "2"
     secrets:
       PRIVATE_DEPS_TOKEN:
         description: "Token with read access to private git-dependency repos (e.g. FLEET_READ_TOKEN). Optional — omit if the workspace has no private cargo git deps."
@@ -46,7 +54,14 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
-    runs-on: ${{ fromJson(inputs.runner) }}
+    # PUBLIC repos are FORCED onto GitHub-hosted runners, overriding `runner`.
+    # A public repo accepts fork pull requests, and a self-hosted runner
+    # executing fork-authored code would run arbitrary code on the homelab
+    # cluster. This is the one case where honouring the caller's input would be
+    # wrong. Private repos keep whatever `runner` says (default: self-hosted).
+    # `github.event.repository.visibility` is populated for every trigger type
+    # these workflows support — same mechanism tf-sonar.yml already uses.
+    runs-on: ${{ github.event.repository.visibility == 'public' && fromJson('["ubuntu-latest"]') || fromJson(inputs.runner) }}
     defaults:
       run:
         shell: bash
