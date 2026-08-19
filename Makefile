@@ -20,11 +20,17 @@ lint:
 			exit 1; \
 		fi \
 	fi
-	cd examples/hello && cargo clippy --all-targets --all-features -- -D warnings
+	@for ex in examples/*/; do \
+		echo "==> clippy $$ex"; \
+		( cd "$$ex" && cargo clippy --all-targets --all-features -- -D warnings ) || exit 1; \
+	done
 
 ## fmt-check: Check Rust example formatting
 fmt-check:
-	cd examples/hello && cargo fmt --all -- --check
+	@for ex in examples/*/; do \
+		echo "==> fmt-check $$ex"; \
+		( cd "$$ex" && cargo fmt --all -- --check ) || exit 1; \
+	done
 
 ## check: Run all local checks (lint)
 check: lint
