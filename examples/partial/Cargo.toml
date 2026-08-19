@@ -1,0 +1,11 @@
+[package]
+name = "partial"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88.0"
+description = "Deliberately half-tested fixture that pins the mutation gate's ability to fail"
+license = "MIT"
+
+[lib]
+name = "partial"
+path = "src/lib.rs"

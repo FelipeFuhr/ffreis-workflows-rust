@@ -215,6 +215,60 @@ jobs:
       # Public repo: self-hosted structurally unavailable — pin explicitly.
       runner: '["ubuntu-latest"]'
 
+  # REGRESSION GUARD for the vacuous-mutation-gate bug (fixed 2026-08-19).
+  #
+  # The job above cannot detect that class of bug: examples/hello is fully
+  # tested, so it scores 100 whether the harness measures anything or not.
+  # examples/partial leaves shrink_to_fit_len() untested on purpose and scores
+  # 50 when the harness works — versus exactly 100 when it is silently reading
+  # no results at all. threshold: 0 because this pair MEASURES the harness
+  # rather than gating the fixture; the real assertion is the job below.
+  mutation-measures-real-outcomes:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/rust-mutation.yml
+    with:
+      working-directory: examples/partial
+      threshold: 0
+      # Public repo: self-hosted structurally unavailable — pin explicitly.
+      runner: '["ubuntu-latest"]'
+
+  assert-mutation-not-vacuous:
+    name: Mutation gate must measure real outcomes
+    needs: [mutation-measures-real-outcomes]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: Score must reflect the fixture's surviving mutants
+        env:
+          SCORE: ${{ needs.mutation-measures-real-outcomes.outputs.mutation-score }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${SCORE:-}" ]]; then
+            echo "::error title=Vacuous mutation gate::the mutation workflow produced no score output at all."
+            exit 1
+          fi
+
+          # A harness that never reads real cargo-mutants results reports
+          # exactly 100 via the total==0 branch. examples/partial has
+          # deliberately untested code, so a working harness cannot.
+          if [[ "$SCORE" -ge 100 ]]; then
+            echo "::error title=Vacuous mutation gate::examples/partial leaves shrink_to_fit_len() untested, so a working harness must score below 100 — got ${SCORE}. The scorer is not reading real cargo-mutants outcomes, which means the mutation gate cannot fail on ANY consumer repo."
+            exit 1
+          fi
+
+          # And the tested half must still be caught, or the fixture has
+          # decayed into "everything survives" and proves nothing either.
+          if [[ "$SCORE" -le 0 ]]; then
+            echo "::error title=Mutation fixture broken::score ${SCORE} means nothing was caught; clamp_between() is tested and its mutants should be."
+            exit 1
+          fi
+
+          echo "Mutation harness verified end-to-end: real score ${SCORE}% on examples/partial."
+
   proptest:
     permissions:
       contents: read

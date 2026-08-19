@@ -62,6 +62,34 @@ check, benchmarks, and Miri.
    wired: `cargo fmt` never resolves the dependency graph, so it has nothing to
    authenticate.
 
+4b. **`rust-mutation.yml`: never pass `--output` to cargo-mutants, and never let
+   "no results" mean "pass".** `cargo mutants --output DIR` treats `DIR` as the
+   PARENT and writes `DIR/mutants.out/`. This workflow used `--output
+   mutants.out` while the scorer read `mutants.out/*.txt`, so every count came
+   back 0, the `total == 0 -> pass` branch fired, and the gate reported a clean
+   **100% on all 24 consumer repos without ever measuring anything** (found
+   2026-08-19; cargo-mutants 27.1.0). Two invariants now hold the fix:
+   the default output path is used (`./mutants.out`), and a missing
+   `mutants.out/` — or a `mutants.out/` with no `caught/missed/unviable/timeout.txt`
+   — is a **hard error**, never a pass. Absence of evidence is not evidence of
+   success.
+   `examples/hello` could not catch this: a fully-tested crate scores 100
+   whether the harness works or not. That is what `examples/partial` (half
+   tested, scores 50) plus the `assert-mutation-not-vacuous` job in
+   `self-test.yml` exist for — **do not add tests to `shrink_to_fit_len()`** or
+   the fixture stops discriminating.
+
+4c. **`in-diff: true` is how a real crate gets a usable mutation gate.** A full
+   run scales with crate size and silently becomes unrunnable: `ffreis-job-arbiter`
+   has 987 mutants against a ~28s suite, ≈123 min at 4 workers versus the 90 min
+   default `timeout-minutes` — so it never completed once and the gate was pure
+   cost. `in-diff: true` mutates only the lines a PR changed (7 mutants / 109s on
+   that same repo, measured). Requires `fetch-depth: 0`, which the workflow sets
+   itself; note the quoted `'0'`/`'1'` in that expression, because GitHub treats
+   the *number* `0` as falsy and the unquoted form silently yields a shallow clone.
+   cargo-mutants also rejects a diff that does not match the working tree, hence
+   the three-dot `base...HEAD` diff computed on the PR head.
+
 5. **Coverage threshold** (`coverage-threshold`, default 80) is per-workflow input.
    Callers override per their own standard.
 

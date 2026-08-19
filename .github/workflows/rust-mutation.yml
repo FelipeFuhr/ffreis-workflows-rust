@@ -70,6 +70,20 @@ on:
           count).
         type: string
         default: "4"
+      in-diff:
+        description: >-
+          On pull_request events, mutate ONLY the lines this PR changed
+          (cargo-mutants --in-diff) instead of the whole crate. Strongly
+          recommended for any crate big enough that a full run cannot finish
+          inside timeout-minutes: ffreis-job-arbiter has 987 mutants against a
+          ~28s test suite, which at 4 workers is ~123 min versus the 90 min
+          default timeout — so its gate never once completed. Scoped to a PR's
+          own diff the same repo finished in 109s. Also the better signal: it
+          asks "are these new lines tested", not "is the whole crate perfect".
+          Ignored on non-pull_request events, which have no base to diff.
+        required: false
+        type: boolean
+        default: false
     outputs:
       mutation-score:
         description: 'Achieved mutation score (integer, 0–100)'
@@ -96,7 +110,13 @@ jobs:
       CARGO_BUILD_JOBS: ${{ inputs.cargo-build-jobs }}
 
     steps:
+      # fetch-depth 0 only when --in-diff needs a merge-base. Note the quoted
+      # '0'/'1': GitHub expressions treat the NUMBER 0 as falsy, so the
+      # unquoted form `inputs.in-diff && 0 || 1` silently evaluates to 1 and
+      # the shallow clone breaks the merge-base lookup.
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: ${{ inputs.in-diff && '0' || '1' }}
 
       - name: Configure git for private cargo dependencies
         env:
@@ -159,12 +179,20 @@ jobs:
             echo "::warning title=Unscoped cargo-mutants run::mutants-args is empty ('') and this workspace declares ${member_count} member(s). The default mutates the ENTIRE workspace, which has filled CI disk before on multi-crate repos. Pass mutants-args: '-p <crate-name>' (or run one job per crate) to scope this run."
           fi
 
+      # Prebuilt binary (no from-source compile per run) — matching what
+      # rust-coverage/rust-test/rust-deny/rust-integration-coverage already do.
+      #
+      # This is load-bearing on the self-hosted fleet, not just a speedup:
+      # `cargo install <tool> --locked` compiles a large crate graph inside the
+      # runner pod, and the ci-light tier is capped at 2Gi. That OOM-kills the
+      # pod mid-step — confirmed 2026-08-19 on ffreis-job-arbiter PR #61, where
+      # `security / audit` died with "Install cargo-audit" never completing and
+      # job_pod_terminated_total{reason="OOMKilled"} recording the kill for that
+      # exact pod. Mutation would have hit the identical wall.
       - name: Install cargo-mutants
-        run: |
-          set -euo pipefail
-          if ! command -v cargo-mutants >/dev/null 2>&1; then
-            cargo install cargo-mutants --locked
-          fi
+        uses: taiki-e/install-action@25435dc8dd3baed7417e0c96d3fe89013a5b2e09 # v2.81.3
+        with:
+          tool: cargo-mutants
 
       # Establish a baseline — avoids counting slow clean-build time as test time.
       - name: Baseline test run
@@ -172,73 +200,154 @@ jobs:
           set -euo pipefail
           cargo test --all-features 2>&1 | tail -5
 
-      - name: Run mutation testing
-        id: run
+      # cargo-mutants requires the diff to apply cleanly to the CURRENT tree —
+      # it aborts with "Diff content doesn't match source file" otherwise. So:
+      # three-dot (merge-base) diff, computed on the PR head, against a
+      # full-history checkout.
+      - name: Compute PR diff for --in-diff
+        id: diff
+        if: ${{ inputs.in-diff && github.event_name == 'pull_request' }}
         env:
-          MUTATION_JOBS: ${{ inputs.jobs }}
-          MUTANTS_ARGS: ${{ inputs.mutants-args }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          DIFF_PATH: ${{ runner.temp }}/pr.diff
         run: |
           set -euo pipefail
 
-          mkdir -p mutants.out
+          base=""
+          for candidate in "origin/${BASE_REF}" "${BASE_REF}"; do
+            if git rev-parse --verify --quiet "$candidate" >/dev/null 2>&1; then
+              base="$candidate"
+              break
+            fi
+          done
+          if [[ -z "$base" ]]; then
+            echo "::error title=Mutation diff error::cannot resolve base ref '${BASE_REF}'. Ensure the checkout used fetch-depth: 0."
+            exit 1
+          fi
+
+          git diff "${base}...HEAD" -- '*.rs' > "$DIFF_PATH"
+
+          if [[ ! -s "$DIFF_PATH" ]]; then
+            echo "result=empty" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Mutation skipped::This PR changes no Rust source, so there is nothing to mutate."
+          else
+            echo "result=ok" >> "$GITHUB_OUTPUT"
+            echo "Mutating only lines changed by this PR ($(grep -c '^+++' "$DIFF_PATH") changed .rs file(s))."
+          fi
+
+      - name: Run mutation testing
+        id: run
+        if: ${{ steps.diff.outputs.result != 'empty' }}
+        env:
+          MUTATION_JOBS: ${{ inputs.jobs }}
+          MUTANTS_ARGS: ${{ inputs.mutants-args }}
+          IN_DIFF: ${{ steps.diff.outputs.result == 'ok' && format('{0}/pr.diff', runner.temp) || '' }}
+        run: |
+          set -euo pipefail
+
           read -r -a mutants_args_arr <<< "${MUTANTS_ARGS:-}"
 
-          # Run cargo-mutants; exit code 0 = all caught, 2 = missed, 3 = timeout, 4 = error.
-          # We capture exit code manually so we can still extract the score on partial runs.
+          in_diff_args=()
+          if [[ -n "${IN_DIFF:-}" ]]; then
+            in_diff_args=(--in-diff "$IN_DIFF")
+          fi
+
+          # DO NOT pass `--output mutants.out`. cargo-mutants treats --output as
+          # the PARENT directory and creates <parent>/mutants.out inside it, so
+          # that spelling wrote results to mutants.out/mutants.out/*.txt while
+          # the scorer below read mutants.out/*.txt. Every count came back 0,
+          # which the old "total == 0 -> pass" branch reported as a clean 100%.
+          # The gate therefore could not fail on ANY consumer repo. The default
+          # output location is already ./mutants.out — which is what the scorer
+          # and the artifact upload both expect. Verified 2026-08-19 against
+          # cargo-mutants 27.1.0.
+          #
+          # Exit code 0 = all caught, 2 = missed, 3 = timeout, 4 = error. It is
+          # swallowed so the scorer owns the pass/fail decision (it must run on
+          # partial results too); the scorer hard-fails when no outcome files
+          # exist, so a crashed run can no longer slip through as a pass.
           cargo mutants \
             --jobs "$MUTATION_JOBS" \
-            --output mutants.out \
+            "${in_diff_args[@]}" \
             "${mutants_args_arr[@]}" \
             2>&1 || true
 
       - name: Compute score and enforce threshold
         id: score
+        if: ${{ steps.diff.outputs.result != 'empty' }}
         env:
           THRESHOLD: ${{ inputs.threshold }}
         run: |
           set -euo pipefail
 
-          # cargo-mutants writes per-outcome text files (one mutant description per line).
-          caught=0
-          missed=0
-          timeout=0
-
-          if [ -f mutants.out/caught.txt ]; then
-            caught=$(grep -c . mutants.out/caught.txt 2>/dev/null || echo 0)
-          fi
-          if [ -f mutants.out/missed.txt ]; then
-            missed=$(grep -c . mutants.out/missed.txt 2>/dev/null || echo 0)
-          fi
-          if [ -f mutants.out/timeout.txt ]; then
-            timeout=$(grep -c . mutants.out/timeout.txt 2>/dev/null || echo 0)
-          fi
-
-          total=$(( caught + missed ))
-          THRESHOLD="${THRESHOLD:-}"
-          if [[ -z "$THRESHOLD" ]]; then
+          threshold="${THRESHOLD:-}"
+          if [[ -z "$threshold" ]]; then
             echo "::error::threshold input is required"
             exit 1
           fi
-          threshold="$THRESHOLD"
 
-          if [ "$total" -eq 0 ]; then
-            echo "::notice title=Mutation Score::No viable mutants found — marking as passed."
+          # Absence of evidence is NOT evidence of success. If cargo-mutants
+          # wrote no outcome files at all, the harness is broken (wrong path,
+          # crashed run, bad args) — fail loudly instead of reporting a clean
+          # score for a run that measured nothing. This distinction is the
+          # whole bug: the previous version could not tell "ran, found nothing
+          # to mutate" from "never produced results", and called both a pass.
+          if [[ ! -d mutants.out ]]; then
+            echo "::error title=Mutation harness error::mutants.out/ does not exist — cargo-mutants did not write its outcomes where the scorer looked. This is a harness bug, not a passing run."
+            exit 1
+          fi
+
+          have_outcomes=0
+          for f in caught.txt missed.txt unviable.txt timeout.txt; do
+            if [[ -f "mutants.out/${f}" ]]; then
+              have_outcomes=1
+              break
+            fi
+          done
+          if [[ "$have_outcomes" -eq 0 ]]; then
+            echo "::error title=Mutation harness error::no cargo-mutants outcome files (caught/missed/unviable/timeout.txt) under mutants.out/. Refusing to report a passing score for a run that produced no evidence."
+            ls -la mutants.out || true
+            exit 1
+          fi
+
+          count_lines() {
+            if [[ -f "$1" ]]; then
+              grep -c . "$1" 2>/dev/null || true
+            else
+              echo 0
+            fi
+          }
+
+          caught=$(count_lines mutants.out/caught.txt);     caught=${caught:-0}
+          missed=$(count_lines mutants.out/missed.txt);     missed=${missed:-0}
+          timed_out=$(count_lines mutants.out/timeout.txt); timed_out=${timed_out:-0}
+          unviable=$(count_lines mutants.out/unviable.txt); unviable=${unviable:-0}
+
+          # Unviable mutants (the mutation does not compile) are excluded from
+          # the score deliberately: no test could ever have caught them.
+          total=$(( caught + missed ))
+          echo "Caught: ${caught}  Missed: ${missed}  Timeout: ${timed_out}  Unviable: ${unviable}"
+
+          if [[ "$total" -eq 0 ]]; then
+            # Reached only with real outcome files present — e.g. an --in-diff
+            # run whose diff touched no mutable code.
+            echo "::notice title=Mutation Score::cargo-mutants ran and found no viable mutants (unviable: ${unviable}) — nothing to score."
             echo "score=100" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           score=$(( caught * 100 / total ))
           echo "score=${score}" >> "$GITHUB_OUTPUT"
-
-          echo "Caught: ${caught}  Missed: ${missed}  Timeout: ${timeout}"
           echo "Score: ${score}%  Threshold: ${threshold}%"
 
-          if [ "${score}" -lt "${threshold}" ]; then
+          if [[ "$score" -lt "$threshold" ]]; then
             echo "::error title=Mutation Score Too Low::Score ${score}% is below threshold ${threshold}%. Caught ${caught}/${total} mutants. Add tests that exercise more code paths."
+            echo "Surviving mutants:"
+            head -20 mutants.out/missed.txt || true
             exit 1
-          else
-            echo "::notice title=Mutation Score OK::Score ${score}% ≥ threshold ${threshold}% (${caught}/${total} mutants caught)."
           fi
+
+          echo "::notice title=Mutation Score OK::Score ${score}% ≥ threshold ${threshold}% (${caught}/${total} mutants caught)."
 
       # Upload missed/timeout mutant lists to make actionable findings visible.
       - name: Upload mutants output
