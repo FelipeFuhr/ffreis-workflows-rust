@@ -138,10 +138,20 @@ jobs:
       # `--profile minimal`). That is the deliberate trade — a predictable
       # ~30-60s against a failure that is invisible until it isn't.
       #
+      # The PATH MATTERS, and /tmp is the wrong one. In this fleet's runner
+      # pods /tmp is an emptyDir with `sizeLimit: 2Gi`, and a toolchain is
+      # ~2Gi — so a first attempt at this evicted the pod outright:
+      #   Evicted: Usage of EmptyDir volume "tmp" exceeds the limit "2Gi"
+      # which surfaces, again, as "the self-hosted runner lost communication".
+      # /home/runner/_work is the `work` emptyDir at 8Gi, the only mount with
+      # room. It is shared with the build's target/ dir, so a repo whose
+      # target/ approaches 6Gi will need that limit raised rather than this
+      # path changed.
+      #
       # It also means CI no longer depends on the image's baked toolchain at
       # all, which is the answer to "should the image bake one?": it should
       # not, and this is what makes removing it safe.
-      RUSTUP_HOME: /tmp/rustup-ci
+      RUSTUP_HOME: /home/runner/_work/_temp/rustup-ci
       CARGO_BUILD_JOBS: ${{ inputs.cargo-build-jobs }}
       CARGO_PROFILE_DEV_DEBUG: ${{ inputs.cargo-profile-debug }}
 
