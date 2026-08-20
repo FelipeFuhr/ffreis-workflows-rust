@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.0](https://github.com/FelipeFuhr/ffreis-workflows-rust/compare/v2.0.2...v2.1.0) (2026-08-20)
+
+
+### Features
+
+* **rust:** cut CI build memory 20% via line-tables-only debuginfo ([#88](https://github.com/FelipeFuhr/ffreis-workflows-rust/issues/88)) ([b92f988](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/b92f9883d34e27c03a4d598001ec2a727cd40608))
+
 ## [2.0.2](https://github.com/FelipeFuhr/ffreis-workflows-rust/compare/v2.0.1...v2.0.2) (2026-08-20)
 
 
