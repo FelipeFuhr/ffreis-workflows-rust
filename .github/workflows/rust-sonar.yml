@@ -45,8 +45,18 @@ on:
           Makefile convention — memory-safe on a 4.5Gi-limited self-hosted
           runner pod. Hosted-runner callers wanting full parallelism can pass
           a higher value (e.g. the runner's core count).
+
+          NOTE (2026-08-19): the "4.5Gi" figure above is STALE — the heavy tier
+          was resized 4.5Gi -> 2Gi -> 2.25Gi -> 2.5Gi and this text was never
+          updated, so callers inheriting the old default were silently
+          over-committed. Default lowered to "2". Measured on ffreis-rust-shared
+          under a cgroup mirroring the heavy pod (MemoryMax=2560M, no swap,
+          2 CPU): peak anon 2541 MB at jobs=1, i.e. 99% of the limit before any
+          parallelism. The failure mode is NOT a build error — the runner agent
+          shares the pod cgroup, so it is the AGENT that dies, surfacing as
+          "the self-hosted runner lost communication with the server".
         type: string
-        default: "4"
+        default: "2"
     secrets:
       PRIVATE_DEPS_TOKEN:
         description: "Token with read access to private git-dependency repos (e.g. FLEET_READ_TOKEN). Optional — omit if the workspace has no private cargo git deps."
@@ -60,7 +70,14 @@ jobs:
     name: SonarCloud
     permissions:
       contents: read
-    runs-on: ${{ fromJson(inputs.runner) }}
+    # PUBLIC repos are FORCED onto GitHub-hosted runners, overriding `runner`.
+    # A public repo accepts fork pull requests, and a self-hosted runner
+    # executing fork-authored code would run arbitrary code on the homelab
+    # cluster. This is the one case where honouring the caller's input would be
+    # wrong. Private repos keep whatever `runner` says (default: self-hosted).
+    # `github.event.repository.visibility` is populated for every trigger type
+    # these workflows support — same mechanism tf-sonar.yml already uses.
+    runs-on: ${{ github.event.repository.visibility == 'public' && fromJson('["ubuntu-latest"]') || fromJson(inputs.runner) }}
     if: vars.SONAR_ENABLED == 'true'
 
     defaults:
