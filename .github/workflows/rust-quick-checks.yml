@@ -75,6 +75,35 @@ on:
         required: false
         type: string
         default: '["self-hosted","local"]'
+      cargo-profile-debug:
+        description: >-
+          Sets CARGO_PROFILE_DEV_DEBUG — the dev profile's `debug` level, which
+          the test profile inherits, so one value covers build and test.
+
+          Default "line-tables-only" keeps panic backtraces (file/line still
+          resolve) while dropping full DWARF, which is the single largest
+          consumer of rustc and linker memory. Measured on ffreis-job-arbiter
+          under a cgroup mirroring the runner pod, `cargo test --no-run`,
+          jobs=2: 1931 MiB full debuginfo -> 1554 MiB line-tables-only, a 20%
+          cut, with NO throughput cost.
+
+          For contrast, capping parallelism — the knob this fleet has been
+          tuning — bought 3% on the same build (jobs=1: 1872 MiB) while halving
+          build concurrency, because peak is set by the single largest
+          compilation unit, not by how many run at once. That is also why
+          `cargo-build-jobs: 1` did not rescue ffreis-rust-shared at 2541 MB
+          (99% of the 2.5Gi heavy tier) as this file's other comment records.
+
+          Coverage is unaffected: cargo-llvm-cov uses instrumentation profiles,
+          not DWARF. Verified byte-identical on ffreis-job-arbiter — 88.44%
+          line / 87.35% region with and without.
+
+          Pass "full" to restore complete debug info (a debugger or core-dump
+          workflow), or "0" for the smallest possible footprint if you do not
+          need backtraces.
+        required: false
+        type: string
+        default: "line-tables-only"
       cargo-build-jobs:
         description: >-
           Caps CARGO_BUILD_JOBS (parallel rustc compile units) for the clippy
@@ -123,6 +152,7 @@ jobs:
         working-directory: ${{ inputs.working-directory }}
     env:
       CARGO_BUILD_JOBS: ${{ inputs.cargo-build-jobs }}
+      CARGO_PROFILE_DEV_DEBUG: ${{ inputs.cargo-profile-debug }}
     steps:
       - uses: actions/checkout@0c366fd6a839edf440554fa01a7085ccba70ac98 # v4
 
