@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.0.2](https://github.com/FelipeFuhr/ffreis-workflows-rust/compare/v2.0.1...v2.0.2) (2026-08-20)
+
+
+### Bug Fixes
+
+* **mutation:** "nothing to mutate" is a pass, not a harness error ([#86](https://github.com/FelipeFuhr/ffreis-workflows-rust/issues/86)) ([3f80d49](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/3f80d49a4baa8939202e6d8a3549f73e9750149f))
+* **rust:** force public repos to hosted runners; correct stale jobs default ([#85](https://github.com/FelipeFuhr/ffreis-workflows-rust/issues/85)) ([3ede1ea](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/3ede1eace6cee30c58ae91c6fee81c6028fdac93))
+
 ## [2.0.1](https://github.com/FelipeFuhr/ffreis-workflows-rust/compare/v2.0.0...v2.0.1) (2026-08-19)
 
 
