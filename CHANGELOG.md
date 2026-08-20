@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.1](https://github.com/FelipeFuhr/ffreis-workflows-rust/compare/v2.1.0...v2.1.1) (2026-08-20)
+
+
+### Bug Fixes
+
+* **rust:** keep rustup's home off the image's overlay lower layer ([#90](https://github.com/FelipeFuhr/ffreis-workflows-rust/issues/90)) ([b3b0636](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/b3b063636f2aa7639b8c47dede6703821b05f2f2))
+
 ## [2.1.0](https://github.com/FelipeFuhr/ffreis-workflows-rust/compare/v2.0.2...v2.1.0) (2026-08-20)
 
 
