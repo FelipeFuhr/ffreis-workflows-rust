@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.2](https://github.com/FelipeFuhr/ffreis-workflows-rust/compare/v2.1.1...v2.1.2) (2026-08-20)
+
+
+### Bug Fixes
+
+* **rust:** put RUSTUP_HOME on the volume that has room ([#92](https://github.com/FelipeFuhr/ffreis-workflows-rust/issues/92)) ([d47b46d](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/d47b46dd705729e7af1d8a563e819707e60a5164))
+
 ## [2.1.1](https://github.com/FelipeFuhr/ffreis-workflows-rust/compare/v2.1.0...v2.1.1) (2026-08-20)
 
 
