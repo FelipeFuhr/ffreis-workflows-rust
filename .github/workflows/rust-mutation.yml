@@ -266,17 +266,36 @@ jobs:
           # swallowed so the scorer owns the pass/fail decision (it must run on
           # partial results too); the scorer hard-fails when no outcome files
           # exist, so a crashed run can no longer slip through as a pass.
+          # The exit code is CAPTURED, not discarded, because the scorer needs
+          # to tell two very different "no mutants.out/" cases apart:
+          #   exit 0 + no output dir -> cargo-mutants ran and had nothing to
+          #                             mutate (e.g. an --in-diff whose only
+          #                             .rs changes are test files, which it
+          #                             does not mutate). It prints
+          #                             "No mutants to filter" and writes NO
+          #                             directory at all. This is a PASS.
+          #   non-0 + no output dir  -> it died before writing anything. This
+          #                             is a harness error and must FAIL.
+          # Without this, the scorer's own missing-evidence guard misfires on
+          # a perfectly good run — observed on job-arbiter #65, whose only .rs
+          # change was tests/mutation_score.rs.
+          set +e
           cargo mutants \
             --jobs "$MUTATION_JOBS" \
             "${in_diff_args[@]}" \
             "${mutants_args_arr[@]}" \
-            2>&1 || true
+            2>&1
+          mutants_rc=$?
+          set -e
+          echo "rc=${mutants_rc}" >> "$GITHUB_OUTPUT"
+          echo "cargo-mutants exited ${mutants_rc}"
 
       - name: Compute score and enforce threshold
         id: score
         if: ${{ steps.diff.outputs.result != 'empty' }}
         env:
           THRESHOLD: ${{ inputs.threshold }}
+          MUTANTS_RC: ${{ steps.run.outputs.rc }}
         run: |
           set -euo pipefail
 
@@ -290,10 +309,23 @@ jobs:
           # wrote no outcome files at all, the harness is broken (wrong path,
           # crashed run, bad args) — fail loudly instead of reporting a clean
           # score for a run that measured nothing. This distinction is the
-          # whole bug: the previous version could not tell "ran, found nothing
-          # to mutate" from "never produced results", and called both a pass.
+          # whole bug: the original could not tell "ran, found nothing to
+          # mutate" from "never produced results", and called both a pass.
+          #
+          # But the mirror-image mistake is just as wrong, and the first
+          # version of this guard made it: cargo-mutants writes NO directory
+          # at all when it has nothing to mutate — an --in-diff whose only .rs
+          # changes are test files prints "No mutants to filter" and exits 0.
+          # Treating that as a harness error fails a perfectly good run.
+          # Observed on job-arbiter #65 (only .rs change: tests/mutation_score.rs).
+          # So the exit code, not the directory alone, is what separates them.
           if [[ ! -d mutants.out ]]; then
-            echo "::error title=Mutation harness error::mutants.out/ does not exist — cargo-mutants did not write its outcomes where the scorer looked. This is a harness bug, not a passing run."
+            if [[ "${MUTANTS_RC:-1}" == "0" ]]; then
+              echo "::notice title=Mutation Score::cargo-mutants ran and found nothing to mutate (exit 0, no outcome files) — the changed Rust lines contain no mutable code, e.g. tests only."
+              echo "score=100" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::error title=Mutation harness error::mutants.out/ does not exist and cargo-mutants exited ${MUTANTS_RC:-unknown} — it died before writing any outcomes. This is a harness bug, not a passing run."
             exit 1
           fi
 
