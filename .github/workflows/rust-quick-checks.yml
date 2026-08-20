@@ -151,6 +151,33 @@ jobs:
         shell: bash
         working-directory: ${{ inputs.working-directory }}
     env:
+      # Keep rustup's home OFF the image's overlay lower layer.
+      #
+      # The runner image bakes a toolchain at /usr/local/rustup. When CI asks
+      # for `stable` and upstream has moved, rustup tries to REPLACE the baked
+      # components, which means renaming a directory that lives in a lower
+      # overlayfs layer — and overlayfs answers EXDEV ("Invalid cross-device
+      # link") for exactly that. rustup then rolls back and exits 1:
+      #
+      #   error: could not rename 'component' file from
+      #   '/usr/local/rustup/toolchains/stable-.../share/doc/clippy'
+      #   to '/usr/local/rustup/tmp/...': Invalid cross-device link (os error 18)
+      #
+      # It looks intermittent because a pod that survives one successful
+      # update has copied-up and never fails again — only FRESH pods break. So
+      # it surfaces after any Deployment roll, and `toolchain: 1.88.0` (the
+      # MSRV, which matches what is baked) keeps passing while `stable` fails.
+      #
+      # Pointing RUSTUP_HOME at a writable path makes the install FRESH rather
+      # than a replace, so no lower-layer rename happens. Cost: a minimal
+      # toolchain download per pod (the action already passes
+      # `--profile minimal`). That is the deliberate trade — a predictable
+      # ~30-60s against a failure that is invisible until it isn't.
+      #
+      # It also means CI no longer depends on the image's baked toolchain at
+      # all, which is the answer to "should the image bake one?": it should
+      # not, and this is what makes removing it safe.
+      RUSTUP_HOME: /tmp/rustup-ci
       CARGO_BUILD_JOBS: ${{ inputs.cargo-build-jobs }}
       CARGO_PROFILE_DEV_DEBUG: ${{ inputs.cargo-profile-debug }}
     steps:
