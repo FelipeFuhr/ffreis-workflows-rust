@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.0](https://github.com/FelipeFuhr/ffreis-workflows-rust/compare/v2.1.2...v2.2.0) (2026-08-21)
+
+
+### Features
+
+* **rust:** derive CARGO_BUILD_JOBS from the pod's real memory limit ([#94](https://github.com/FelipeFuhr/ffreis-workflows-rust/issues/94)) ([fd0c033](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/fd0c0331892aa6ecd421fdc7a59e0af42c98c777))
+
 ## [2.1.2](https://github.com/FelipeFuhr/ffreis-workflows-rust/compare/v2.1.1...v2.1.2) (2026-08-20)
 
 
