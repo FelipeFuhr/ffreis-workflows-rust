@@ -100,22 +100,52 @@ check, benchmarks, and Miri.
 8. **Container build in `self-test.yml`:** pass `push: false` or omit registry inputs —
    no registry credentials required in this repo.
 
-9. **`cargo-build-jobs` input (default `"4"`) caps `CARGO_BUILD_JOBS`** on every
+9. **`cargo-build-jobs` input (default `"auto"`) caps `CARGO_BUILD_JOBS`** on every
    reusable workflow that compiles Rust source: `rust-build.yml`, `rust-test.yml`,
    `rust-docs.yml`, `rust-mutation.yml`, `rust-coverage.yml`,
    `rust-integration-coverage.yml`, `rust-bench.yml`, `rust-miri.yml`,
    `rust-proptest.yml`, `rust-msrv.yml`, `rust-lint.yml` (clippy
    is a full compile), `rust-quick-checks.yml` (its clippy step), and
-   `rust-sonar.yml` (its llvm-cov build). Set as a job-level `env:` so it applies
-   to every step. Prevents rustc's default full-core parallelism from
-   OOM-SIGKILLing a job on the memory-constrained runner
-   when compiling a heavy dependency graph (e.g. `aws-sdk-*`
-   crates). Default "4" matches the workspace Makefile convention; GitHub-hosted
-   callers wanting full parallelism pass a higher value. `rust-fmt.yml`,
-   `rust-deny.yml`, `rust-affected.yml`, and `rust-security.yml` are
-   intentionally NOT wired — none of them compile the caller's workspace
-   (`cargo fmt`/`cargo deny check`/`cargo metadata`/`cargo audit` all work off
-   the manifest or lockfile, not a full build).
+   `rust-sonar.yml` (its llvm-cov build). Prevents rustc's default full-core
+   parallelism from OOM-SIGKILLing a job on a memory-constrained runner when
+   compiling a heavy dependency graph (e.g. `aws-sdk-*` crates).
+
+   **`"auto"` derives the cap from `/sys/fs/cgroup/memory.max` at job start**
+   (~1 GiB per compile unit, capped by `nproc`, floored at 1) in a
+   `Resolve build parallelism` step that runs before anything invokes cargo.
+   It is deliberately NOT a job-level `env:` any more: a `$GITHUB_ENV` write
+   overrides both a job-level `env:` and the pod's container env (measured on
+   a real runner, not assumed), so the step is authoritative — and if it were
+   ever skipped, the pod's own value applies as a safe fallback instead of the
+   variable being unset.
+
+   **Why derived rather than a constant:** the previous default `"4"` was
+   documented as memory-safe on a 4.5Gi pod and was never updated as the tier
+   went 4.5Gi -> 2Gi -> 2.25Gi -> 2.5Gi -> 3Gi, silently over-committing every
+   caller. That failure is not loud — the runner agent shares the pod cgroup,
+   so it dies and the job reads as "the self-hosted runner lost communication
+   with the server" with no logs. (This very list said `"4"` while `main` said
+   `"2"`, which is the same drift one level up.)
+
+   **An explicit number always wins over `auto`**, and some crates need it:
+   `ffreis-rust-shared` peaked at 2541 MB with `jobs=1` against a 2560M limit,
+   so memory is dominated by a per-crate baseline rather than being linear in
+   job count — no derivation rescues a crate whose baseline alone exceeds the
+   pod, and the honest fix there is a bigger tier. Unreadable or unlimited
+   limits (hosted runners, cgroup v1) fall back to `2`, never to a large guess.
+
+   `tests/resolve_build_parallelism.bats` (run by `make test`, and by the
+   `resolve-parallelism-tests` job in `ci.yml`) exercises the script
+   **extracted from the YAML** rather than a copy, and guards the 13 duplicated
+   copies against drifting apart. Which workflows need the step is derived from
+   the cargo verbs each file invokes, not hand-listed.
+
+   `rust-fmt.yml`, `rust-deny.yml`, `rust-affected.yml`, `rust-container.yml`,
+   `rust-semgrep.yml`, and `rust-security.yml` are intentionally NOT wired —
+   none compile the caller's workspace (`cargo fmt`/`cargo deny check`/
+   `cargo metadata`/`cargo audit` all work off the manifest or lockfile, and
+   `rust-security.yml` deliberately uses a prebuilt cargo-audit binary rather
+   than `cargo install`).
 
 10. **`--locked` is conditional on `Cargo.lock` existing**, only in
     `rust-build.yml` and `rust-msrv.yml` — the only two reusable workflows that

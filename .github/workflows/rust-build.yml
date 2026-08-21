@@ -93,21 +93,28 @@ on:
         default: "line-tables-only"
       cargo-build-jobs:
         description: >-
-          Caps CARGO_BUILD_JOBS (parallel rustc compile units). Default "2".
+          Caps CARGO_BUILD_JOBS (parallel rustc compile units).
+          Default "auto" — derived from the runner pod's real cgroup memory
+          limit at job start, so a tier resize cannot silently over-commit
+          callers. Pass an explicit number to override (it always wins).
 
           Was "4", documented as memory-safe on a 4.5Gi self-hosted pod. That
           figure went stale — the heavy tier was resized 4.5Gi -> 2Gi -> 2.25Gi
-          -> 2.5Gi and this comment was never updated, so callers inheriting it
-          were silently over-committed. The symptom is not a build failure: the
-          runner agent shares the pod cgroup, so IT dies, surfacing as "the
-          self-hosted runner lost communication with the server" with no logs.
+          -> 2.5Gi -> 3Gi and this comment was never updated, so callers
+          inheriting it were silently over-committed. Deriving it is what stops
+          that recurring. The symptom is not a build failure: the runner agent
+          shares the pod cgroup, so IT dies, surfacing as "the self-hosted
+          runner lost communication with the server" with no logs.
 
           Measured on ffreis-rust-shared under a cgroup mirroring the heavy pod
           (MemoryMax=2560M, no swap, 2 CPU): peak anon 2541 MB at jobs=1 —
-          99% of the limit before any parallelism. Hosted-runner callers with
-          real memory can pass a higher value (e.g. the runner's core count).
+          99% of the limit before any parallelism. Memory is therefore
+          dominated by a per-crate baseline, not linear in job count; a crate
+          whose baseline alone exceeds the pod needs a bigger tier, not a
+          smaller cap. Hosted-runner callers with real memory can pass a
+          higher value (e.g. the runner's core count).
         type: string
-        default: "2"
+        default: "auto"
     secrets:
       PRIVATE_DEPS_TOKEN:
         description: "Token with read access to private git-dependency repos (e.g. FLEET_READ_TOKEN). Optional — omit if the workspace has no private cargo git deps."
@@ -171,10 +178,68 @@ jobs:
       # all, which is the answer to "should the image bake one?": it should
       # not, and this is what makes removing it safe.
       RUSTUP_HOME: /home/runner/_work/_temp/rustup-ci
-      CARGO_BUILD_JOBS: ${{ inputs.cargo-build-jobs }}
       CARGO_PROFILE_DEV_DEBUG: ${{ inputs.cargo-profile-debug }}
 
     steps:
+      # Resolve build parallelism BEFORE anything invokes cargo.
+      #
+      # This step is the single authority: a $GITHUB_ENV write beats both a
+      # job-level `env:` and the value inherited from the runner pod's
+      # container env (both measured on a real runner, 2026-08-21). So no
+      # `CARGO_BUILD_JOBS` is declared at job level any more — if this step
+      # were ever skipped, the pod's own value applies, which is a safe
+      # fallback rather than an unset variable.
+      #
+      # `auto` derives the cap from the pod's REAL cgroup memory limit, so a
+      # tier resize no longer silently over-commits every caller. That is the
+      # failure this replaces: the previous constant ("4", documented as
+      # memory-safe on a 4.5Gi pod) was never updated as the tier went
+      # 4.5Gi -> 2Gi -> 2.25Gi -> 2.5Gi -> 3Gi, and the symptom is not a build
+      # error — the runner agent shares the pod cgroup, so IT dies and the job
+      # surfaces as "the self-hosted runner lost communication" with no logs.
+      #
+      # ~1 GiB per compile unit is deliberately conservative and is a CEILING,
+      # not a target: measured peak on ffreis-rust-shared was 2541 MB at
+      # jobs=1 (99% of a 2560M limit), i.e. memory is dominated by a
+      # per-crate baseline rather than being linear in job count. No formula
+      # can rescue a crate whose baseline alone exceeds the pod — those pass
+      # an explicit number, which always wins over `auto`.
+      - name: Resolve build parallelism
+        # Pinned to the workspace root: this step runs BEFORE checkout, so the
+        # job's default working-directory (the caller's `working-directory`
+        # input, e.g. examples/hello) does not exist yet and bash cannot even
+        # start. Caught by CI on the first run of this change.
+        working-directory: ${{ github.workspace }}
+        env:
+          REQUESTED: ${{ inputs.cargo-build-jobs }}
+        run: |
+          set -euo pipefail
+          if [ "${REQUESTED}" != "auto" ]; then
+            echo "CARGO_BUILD_JOBS=${REQUESTED}" >> "$GITHUB_ENV"
+            echo "build parallelism: ${REQUESTED} (explicit caller override)"
+            exit 0
+          fi
+          # The path is a seam so this can be tested against fixtures — the
+          # workspace's "inject IO, never real IO in a tested path" rule.
+          # Production never sets it.
+          limit="$(cat "${CGROUP_MEMORY_MAX_PATH:-/sys/fs/cgroup/memory.max}" 2>/dev/null || echo max)"
+          cpus="$(nproc 2>/dev/null || echo 2)"
+          # "max" means unlimited (hosted runners, or cgroup v1 layouts where
+          # this file is absent). Never guess a big number from an unreadable
+          # limit — fall back to the value this input used to hardcode.
+          if [ "${limit}" = "max" ] || ! printf '%s' "${limit}" | grep -qE '^[0-9]+$'; then
+            jobs=2
+            why="cgroup limit unreadable or unlimited; safe fallback"
+          else
+            gib=$(( limit / 1073741824 ))
+            [ "${gib}" -lt 1 ] && gib=1
+            jobs="${gib}"
+            [ "${jobs}" -gt "${cpus}" ] && jobs="${cpus}"
+            why="${gib}GiB pod memory limit, ${cpus} cpu"
+          fi
+          echo "CARGO_BUILD_JOBS=${jobs}" >> "$GITHUB_ENV"
+          echo "build parallelism: ${jobs} (${why})"
+
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Configure git for private cargo dependencies

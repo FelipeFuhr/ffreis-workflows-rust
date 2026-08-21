@@ -1,0 +1,15 @@
+---
+# actionlint only knows GitHub's hosted labels out of the box, so any
+# hardcoded fleet label (`local`, `heavy`, `xl`) is reported as unknown and
+# fails the lint. Most workflows here take a `runner:` input instead of
+# hardcoding, which is why this never surfaced before.
+#
+# Declaring them makes actionlint able to CHECK the labels rather than choke
+# on them — a typo like `heavey` is now an error instead of passing silently.
+self-hosted-runner:
+  labels:
+    # Every fleet runner carries these two; the tier is the third label.
+    - local
+    # Tier labels — see ffreis-home-infra gha_runner_deployments.
+    - heavy
+    - xl
