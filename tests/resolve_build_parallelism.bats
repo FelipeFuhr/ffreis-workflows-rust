@@ -149,3 +149,22 @@ run_resolve() {
   # against a partial revert.
   ! grep -rn 'CARGO_BUILD_JOBS: ' "$WORKFLOWS"
 }
+
+@test "case 9: the resolve step never depends on the caller's working-directory" {
+  # It runs BEFORE actions/checkout, so the job's default working-directory
+  # (the caller's `working-directory` input, e.g. examples/hello) does not
+  # exist yet — bash cannot start and the whole job dies before checkout.
+  # That is exactly how the first CI run of this change failed, and nothing
+  # in the extracted-script tests could see it because the bug is in the
+  # step's PLACEMENT, not its logic.
+  local missing=0 name=""
+  for f in "$WORKFLOWS"/rust-*.yml; do
+    name="$(basename "$f")"
+    [ -n "$(step_body "$f")" ] || continue
+    if ! python3 "$BATS_TEST_DIRNAME/lib/check_working_directory.py" "$f"; then
+      echo "$name's resolve step is not pinned to the workspace root"
+      missing=$((missing + 1))
+    fi
+  done
+  [ "$missing" -eq 0 ]
+}

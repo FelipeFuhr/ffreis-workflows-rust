@@ -196,6 +196,11 @@ jobs:
       # can rescue a crate whose baseline alone exceeds the pod — those pass
       # an explicit number, which always wins over `auto`.
       - name: Resolve build parallelism
+        # Pinned to the workspace root: this step runs BEFORE checkout, so the
+        # job's default working-directory (the caller's `working-directory`
+        # input, e.g. examples/hello) does not exist yet and bash cannot even
+        # start. Caught by CI on the first run of this change.
+        working-directory: ${{ github.workspace }}
         env:
           REQUESTED: ${{ inputs.cargo-build-jobs }}
         run: |
