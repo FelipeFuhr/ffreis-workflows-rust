@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help lint check fmt-check secrets-scan-staged lefthook-bootstrap lefthook-install hooks setup
+.PHONY: help lint test check fmt-check secrets-scan-staged lefthook-bootstrap lefthook-install hooks setup
 
 ## help: Show this help message
 help:
@@ -32,8 +32,17 @@ fmt-check:
 		( cd "$$ex" && cargo fmt --all -- --check ) || exit 1; \
 	done
 
-## check: Run all local checks (lint)
-check: lint
+## test: Run the bats suites under tests/
+test:
+	@command -v bats >/dev/null 2>&1 || { \
+		echo "ERROR: bats not found. Install it from https://github.com/bats-core/bats-core"; \
+		exit 1; \
+	}
+	@echo "==> Running bats suites..."
+	@bats tests/
+
+## check: Run all local checks (lint + test)
+check: lint test
 	@echo "==> All checks passed."
 
 ## secrets-scan-staged: Scan staged files for secrets

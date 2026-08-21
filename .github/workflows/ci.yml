@@ -58,6 +58,31 @@ jobs:
       # Public repo: self-hosted structurally unavailable — pin explicitly.
       runner: '["ubuntu-latest"]'
 
+  # Unit-tests the "Resolve build parallelism" step that every compiling
+  # rust-*.yml ships. The dogfooding jobs below exercise that step for real,
+  # but only on ONE runner shape — this covers the shapes CI cannot produce
+  # (a 3Gi pod, an unreadable cgroup, a sub-1GiB limit) and guards the step
+  # against drifting apart across the 13 files that duplicate it.
+  resolve-parallelism-tests:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    # Public repo: self-hosted structurally unavailable — pin explicitly.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install bats
+        run: |
+          set -euo pipefail
+          command -v bats >/dev/null 2>&1 && exit 0
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends bats
+      - name: Ensure PyYAML is importable
+        run: python3 -c 'import yaml' || pip install --quiet pyyaml
+      - name: Run bats suites
+        run: make test
+
   fmt:
     permissions:
       contents: read
