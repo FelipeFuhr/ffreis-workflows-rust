@@ -57,8 +57,9 @@ on:
         default: false
       runner:
         description: |
-          JSON-encoded runner label(s). Default: self-hosted xl tier
-          [self-hosted, local, xl]. Pass '["ubuntu-latest"]' for GitHub-hosted.
+          JSON-encoded runner label(s). Default: self-hosted heavy tier
+          [self-hosted, local, heavy]. Pass '["ubuntu-latest"]' for
+          GitHub-hosted.
 
           scan-fix(ci:oom): was [self-hosted, local] (the light tier, a 2Gi
           pod). cargo-mutants rebuilds the crate once per mutant and is the
@@ -70,13 +71,27 @@ on:
           server" with BlobNotFound job logs — not a mutation-score failure —
           and has repeatedly been misread as flaky network/infra rather than
           a resource-tier mismatch. Measured live: a light-tier run sat at
-          1714Mi against its 2Gi limit. xl (8Gi) fits cargo-mutants' actual
-          footprint and scales to zero the same way light does, so this is
-          not a cost/idle tradeoff. Callers that already pass an explicit
-          `runner:` (e.g. `heavy`) are unaffected by this default change.
+          1714Mi against its 2Gi limit.
+
+          A first correction defaulted this to xl (8Gi), reasoning "xl fits
+          cargo-mutants' actual footprint and scales to zero the same way
+          light does" — WRONG: xl sits at 0 replicas because it is
+          UNSCHEDULABLE, not idle. Its 8Gi pod cannot be admitted on either
+          fleet node while light/heavy are already running (burst-node:
+          9.71Gi allocatable, ~4.7Gi free; local-server: 7.58Gi allocatable,
+          ~3.6Gi free — job-arbiter only schedules a class when a single node
+          can hold it), so a job on xl queues forever instead of failing —
+          worse than the OOM it replaced, since a queued job never surfaces
+          as a failure. heavy (3Gi) is 50% headroom over the 2Gi that OOM'd
+          and IS schedulable alongside light/heavy on either node — evidence
+          it's enough: ffreis-job-arbiter's mutation job PASSED on the 2Gi
+          light tier, only ffreis-cluster-warden's failed there, so the real
+          requirement sits between 2Gi and something modest, not 8Gi.
+          Callers that already pass an explicit `runner:` (e.g. `light`) are
+          unaffected by this default change.
         required: false
         type: string
-        default: '["self-hosted","local","xl"]'
+        default: '["self-hosted","local","heavy"]'
       cargo-profile-debug:
         description: >-
           Sets CARGO_PROFILE_DEV_DEBUG — the dev profile's `debug` level, which
