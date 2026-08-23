@@ -9,6 +9,37 @@ name: Rust Mutation Testing
 # Exit behaviour:
 #   - exit 0  → mutation score ≥ threshold   (pass)
 #   - exit 1  → mutation score  < threshold  (fail CI)
+#
+# Job topology (sharding, added 2026-08-23): `mutation` is a matrix over
+# `shard-count` shards (default 4 — see that input for the evidence). Each
+# shard independently discovers the same mutant set (`cargo mutants --shard
+# k/n`) and uploads its own outcome files as artifact
+# `mutants-report-shard-<k>`. A separate `mutation-aggregate` job downloads
+# every shard's artifact, sums caught/missed/timeout/unviable across ALL of
+# them, and enforces `threshold` exactly ONCE against the combined total —
+# never per shard, so a shard boundary can never let a below-threshold crate
+# through and can never fail a shard for mutants that live entirely in a
+# different shard. `outputs.mutation-score` is sourced from that aggregate
+# job, not from any individual shard.
+#
+# IMPORTANT — what sharding is (and is not) fixing here. This fleet's
+# self-hosted "heavy" runner class — where this job runs by default, see the
+# `runner` input — is capped at max_replicas: 1
+# (platform/ffreis-home-infra ansible role job_arbiter, `ci-build` class;
+# a second replica was tried and left Pending/unschedulable against measured
+# free node memory, the same trap the xl-tier mistake documented on `runner`
+# fell into). That means shards do NOT run in parallel on this fleet — they
+# queue on, and run one at a time on, the single heavy pod. So sharding here
+# is a JOB-SIZE fix only: it guarantees no single job can run past
+# `timeout-minutes` or get silently killed mid-run by job-arbiter's 90-min
+# stale-job reaper. It is NOT a wall-clock fix — splitting one crate's
+# mutation run N ways costs roughly N× the fixed per-shard overhead
+# (checkout, toolchain install, baseline test run) for zero parallelism
+# benefit under today's capacity, and can make the total gate SLOWER.
+# The lever that actually reduces wall-clock (scoping the WORK, not just
+# redistributing it across more same-size jobs) is the `in-diff` input,
+# below — prefer that for PR-triggered runs; reserve a wide shard-count for
+# the full/scheduled sweep that recovers whole-crate coverage.
 
 on:
   workflow_call:
@@ -46,10 +77,22 @@ on:
         type: string
         default: ''
       timeout-minutes:
-        description: 'Total job timeout in minutes'
+        description: >-
+          Per-shard job timeout in minutes. Default 85 — deliberately BELOW
+          job-arbiter's 90-minute stale-job reaper
+          (platform/ffreis-home-infra ansible role job_arbiter:
+          `max_in_progress_duration_secs: 90 * 60`). A job that runs past
+          its own timeout-minutes fails with a clear, attributable "the job
+          has exceeded the maximum execution time of 85 minutes" message; a
+          job that instead runs into job-arbiter's external reaper gets
+          silently cancelled with no such message and reads as flaky infra
+          rather than a real timeout. Keeping this strictly under 90
+          guarantees GitHub's own timeout always wins that race. This is a
+          ceiling, not a target — see `shard-count` for actually keeping
+          typical runs well under the 60-minute goal.
         required: false
         type: number
-        default: 90
+        default: 85
       run_on_draft:
         description: "Run even on draft PRs (default: skip on draft to save CI minutes)"
         required: false
@@ -159,19 +202,111 @@ on:
         required: false
         type: boolean
         default: false
+      shard-count:
+        description: >-
+          Number of matrix shards to split mutation testing across
+          (cargo-mutants --shard k/n). Default 4.
+
+          Evidence for the default: the `in-diff` input above records
+          ffreis-job-arbiter's crate at 987 mutants, estimated ~123 min for
+          a full unscoped run at this workflow's own default `jobs` worker
+          count (4) — past both the 60-min goal and (with any variance) the
+          90-min job-arbiter reaper. 123 min / 4 shards ≈ 31 min of actual
+          mutation-testing compute per shard; this job already installs a
+          prebuilt cargo-mutants binary (taiki-e/install-action, not a
+          from-source `cargo install`) and uses Swatinem/rust-cache, so the
+          fixed per-shard overhead on top of that is on the order of a few
+          minutes — landing comfortably under 60 min per shard with real
+          margin for a bigger or slower crate than the one measured.
+
+          Deliberately NOT higher. cargo-mutants' own docs suggest 8-32
+          shards as a starting point, but that assumes real parallel runner
+          capacity. This fleet's self-hosted "heavy" class is capped at
+          max_replicas: 1 (see the job-topology note at the top of this
+          file) — shards queue and run SERIALLY on the one pod, so every
+          extra shard adds another full round of fixed overhead (checkout,
+          toolchain install, baseline test run) to the total wall-clock for
+          the whole gate, for zero parallelism benefit today. 4 is the
+          smallest shard count that comfortably clears the worst crate
+          measured so far; raising the default further would trade more
+          overhead for headroom this fleet currently has no spare runner
+          capacity to spend faster. (Raising `ci-build`'s max_replicas would
+          change that trade — that is a live-cluster capacity decision, out
+          of scope for this file.)
+
+          Override UP for a crate known to be bigger than 987 mutants.
+          Override DOWN to 1 for small/typical crates (most of the fleet) —
+          a small crate sharded 4 ways pays 4x the fixed overhead for work
+          that would finish in a couple of minutes unsharded. On a
+          pull_request event with `in-diff` active, this workflow already
+          collapses to 1 shard automatically regardless of this input (a
+          diff-scoped PR run is typically a handful of mutants — see
+          `shard-plan` below) — no override needed for that case.
+        required: false
+        type: number
+        default: 4
     outputs:
       mutation-score:
-        description: 'Achieved mutation score (integer, 0–100)'
-        value: ${{ jobs.mutation.outputs.score }}
+        description: 'Achieved mutation score (integer, 0–100), summed across all shards.'
+        value: ${{ jobs.mutation-aggregate.outputs.score }}
     secrets:
       PRIVATE_DEPS_TOKEN:
         description: "Token with read access to private git-dependency repos (e.g. FLEET_READ_TOKEN). Optional — omit if the workspace has no private cargo git deps."
         required: false
 
 jobs:
+  shard-plan:
+    if: ${{ inputs.run_on_draft || vars.CI_RUN_ON_DRAFT == 'true' || github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    name: Plan mutation shards
+    # Cheap jq/seq arithmetic — always GitHub-hosted regardless of `runner`,
+    # so this never consumes self-hosted fleet capacity.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+      total: ${{ steps.plan.outputs.total }}
+    steps:
+      - name: Compute effective shard count and matrix
+        id: plan
+        env:
+          REQUESTED_SHARDS: ${{ inputs.shard-count }}
+          # A pull_request run that in-diff is actually going to scope is
+          # typically a handful of mutants (see the `in-diff` input) —
+          # sharding that pays N x the fixed per-shard overhead for a job
+          # that finishes in well under a minute unsharded. Collapse to 1
+          # shard whenever in-diff will actually apply; every other trigger
+          # (schedule, workflow_dispatch, push) and any pull_request run
+          # with in-diff off keeps the caller's requested shard-count.
+          IN_DIFF_ACTIVE: ${{ inputs.in-diff && github.event_name == 'pull_request' }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${IN_DIFF_ACTIVE}" == "true" ]]; then
+            total=1
+            why="in-diff is scoping this pull_request run to its own diff"
+          else
+            total="${REQUESTED_SHARDS}"
+            why="shard-count input"
+          fi
+
+          if ! [[ "$total" =~ ^[0-9]+$ ]] || [[ "$total" -lt 1 ]]; then
+            echo "::error title=Invalid shard-count::shard-count must resolve to a positive integer, got '${total}'."
+            exit 1
+          fi
+
+          shards=$(seq 0 $((total - 1)) | jq -R 'tonumber' | jq -cs .)
+          echo "shards=${shards}" >> "$GITHUB_OUTPUT"
+          echo "total=${total}" >> "$GITHUB_OUTPUT"
+          echo "Mutation shards: ${total} (${why})"
+
   mutation:
+    needs: shard-plan
     if: ${{ inputs.run_on_draft || vars.CI_RUN_ON_DRAFT == 'true' || github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: Mutation score (cargo-mutants)
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJson(needs.shard-plan.outputs.shards) }}
     # PUBLIC repos are FORCED onto GitHub-hosted runners, overriding `runner`.
     # A public repo accepts pull requests from forks, and a self-hosted runner
     # executing fork-authored code would run arbitrary code on the homelab
@@ -186,8 +321,6 @@ jobs:
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       contents: read
-    outputs:
-      score: ${{ steps.score.outputs.score }}
     defaults:
       run:
         working-directory: ${{ inputs.working-directory }}
@@ -329,6 +462,9 @@ jobs:
       # behavior mid-rollout. The actual policy fix (adding -p <crate> at
       # each caller) is a separate, per-repo change.
       - name: Warn on unscoped mutation testing (multi-crate workspace)
+        # Identical on every shard (same workspace, same mutants-args) —
+        # only emit it once so N shards don't repeat the same annotation.
+        if: ${{ matrix.shard == 0 }}
         env:
           MUTANTS_ARGS: ${{ inputs.mutants-args }}
         run: |
@@ -423,6 +559,8 @@ jobs:
           MUTATION_JOBS: ${{ inputs.jobs }}
           MUTANTS_ARGS: ${{ inputs.mutants-args }}
           IN_DIFF: ${{ steps.diff.outputs.result == 'ok' && format('{0}/pr.diff', runner.temp) || '' }}
+          SHARD_INDEX: ${{ matrix.shard }}
+          SHARD_TOTAL: ${{ needs.shard-plan.outputs.total }}
         run: |
           set -euo pipefail
 
@@ -431,6 +569,27 @@ jobs:
           in_diff_args=()
           if [[ -n "${IN_DIFF:-}" ]]; then
             in_diff_args=(--in-diff "$IN_DIFF")
+          fi
+
+          # Always passed, even at SHARD_TOTAL=1 ("shard 0 of 1" is a no-op —
+          # every mutant belongs to the single shard). One code path for
+          # both the sharded and unsharded case.
+          shard_args=(--shard "${SHARD_INDEX}/${SHARD_TOTAL}")
+
+          # --baseline skip only when actually sharded (SHARD_TOTAL > 1).
+          # The "Baseline test run" step above already verifies the
+          # unmutated crate passes once per shard job; skipping
+          # cargo-mutants' OWN internal baseline avoids paying that same
+          # verification a second time on every shard. Per
+          # https://mutants.rs/shards.html: "if running with
+          # --baseline=skip you must independently verify baseline tests
+          # pass before sharding begins" — the step above satisfies that.
+          # Left in place (cargo-mutants' own baseline still runs) for the
+          # unsharded default path, to avoid changing that path's
+          # long-standing behavior.
+          baseline_args=()
+          if [[ "${SHARD_TOTAL}" -gt 1 ]]; then
+            baseline_args=(--baseline skip)
           fi
 
           # DO NOT pass `--output mutants.out`. cargo-mutants treats --output as
@@ -463,6 +622,8 @@ jobs:
           set +e
           cargo mutants \
             --jobs "$MUTATION_JOBS" \
+            "${shard_args[@]}" \
+            "${baseline_args[@]}" \
             "${in_diff_args[@]}" \
             "${mutants_args_arr[@]}" \
             2>&1
@@ -471,26 +632,27 @@ jobs:
           echo "rc=${mutants_rc}" >> "$GITHUB_OUTPUT"
           echo "cargo-mutants exited ${mutants_rc}"
 
-      - name: Compute score and enforce threshold
-        id: score
+      # Per-shard: verify cargo-mutants left real evidence behind, or a
+      # legitimate "nothing to mutate" — never a silent harness failure.
+      # Threshold enforcement moved to the mutation-aggregate job below,
+      # which is the only place that has ALL shards' outcomes to score
+      # against; a per-shard threshold check would be meaningless (a shard
+      # could easily hold 0 or 1 mutants) and could wrongly fail a shard for
+      # mutants that live entirely in a different shard.
+      - name: Guard against a silent harness failure
+        id: guard
         if: ${{ steps.diff.outputs.result != 'empty' }}
         env:
-          THRESHOLD: ${{ inputs.threshold }}
           MUTANTS_RC: ${{ steps.run.outputs.rc }}
         run: |
           set -euo pipefail
 
-          threshold="${THRESHOLD:-}"
-          if [[ -z "$threshold" ]]; then
-            echo "::error::threshold input is required"
-            exit 1
-          fi
-
           # Absence of evidence is NOT evidence of success. If cargo-mutants
           # wrote no outcome files at all, the harness is broken (wrong path,
-          # crashed run, bad args) — fail loudly instead of reporting a clean
-          # score for a run that measured nothing. This distinction is the
-          # whole bug: the original could not tell "ran, found nothing to
+          # crashed run, bad args) — fail loudly instead of letting the
+          # aggregate job silently read this shard as "nothing to mutate".
+          # This distinction is the whole bug this guard exists to prevent:
+          # the original scorer could not tell "ran, found nothing to
           # mutate" from "never produced results", and called both a pass.
           #
           # But the mirror-image mistake is just as wrong, and the first
@@ -500,13 +662,14 @@ jobs:
           # Treating that as a harness error fails a perfectly good run.
           # Observed on job-arbiter #65 (only .rs change: tests/mutation_score.rs).
           # So the exit code, not the directory alone, is what separates them.
+          # Same logic applies per-shard: a shard whose slice of the diff/
+          # workspace has nothing mutable legitimately produces no output.
           if [[ ! -d mutants.out ]]; then
             if [[ "${MUTANTS_RC:-1}" == "0" ]]; then
-              echo "::notice title=Mutation Score::cargo-mutants ran and found nothing to mutate (exit 0, no outcome files) — the changed Rust lines contain no mutable code, e.g. tests only."
-              echo "score=100" >> "$GITHUB_OUTPUT"
+              echo "::notice title=Mutation Score::shard ${{ matrix.shard }} ran and found nothing to mutate (exit 0, no outcome files)."
               exit 0
             fi
-            echo "::error title=Mutation harness error::mutants.out/ does not exist and cargo-mutants exited ${MUTANTS_RC:-unknown} — it died before writing any outcomes. This is a harness bug, not a passing run."
+            echo "::error title=Mutation harness error::mutants.out/ does not exist on shard ${{ matrix.shard }} and cargo-mutants exited ${MUTANTS_RC:-unknown} — it died before writing any outcomes. This is a harness bug, not a passing run."
             exit 1
           fi
 
@@ -518,33 +681,106 @@ jobs:
             fi
           done
           if [[ "$have_outcomes" -eq 0 ]]; then
-            echo "::error title=Mutation harness error::no cargo-mutants outcome files (caught/missed/unviable/timeout.txt) under mutants.out/. Refusing to report a passing score for a run that produced no evidence."
+            echo "::error title=Mutation harness error::no cargo-mutants outcome files (caught/missed/unviable/timeout.txt) under mutants.out/ on shard ${{ matrix.shard }}. Refusing to treat a run with no evidence as clean."
             ls -la mutants.out || true
             exit 1
           fi
 
+          echo "Shard ${{ matrix.shard }} produced evidence — scoring deferred to the mutation-aggregate job."
+
+      # Upload missed/timeout mutant lists to make actionable findings
+      # visible, and so mutation-aggregate below can sum them. One artifact
+      # name per shard — actions/upload-artifact v4 rejects duplicate names
+      # within a run, and each matrix leg is a separate upload.
+      - name: Upload mutants output
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mutants-report-shard-${{ matrix.shard }}
+          path: ${{ inputs.working-directory }}/mutants.out/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  mutation-aggregate:
+    needs: [shard-plan, mutation]
+    # always() so this still runs (and can report a clear failure) when a
+    # shard failed — the default implicit `if: success()` would instead
+    # skip straight past it and leave `outputs.mutation-score` empty, which
+    # reads as "nothing measured" rather than "a shard broke". Gated on
+    # shard-plan succeeding so a draft-PR skip (shard-plan itself skipped)
+    # propagates to a skip here too, instead of a false failure.
+    if: ${{ always() && needs.shard-plan.result == 'success' }}
+    name: Mutation score (aggregate)
+    # Only sums small text files across downloaded artifacts — always
+    # GitHub-hosted, never consumes self-hosted fleet capacity.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      score: ${{ steps.score.outputs.score }}
+    steps:
+      - name: Fail fast if any shard did not succeed
+        if: ${{ needs.mutation.result != 'success' }}
+        run: |
+          echo "::error title=Mutation harness error::at least one mutation shard did not succeed (result: ${{ needs.mutation.result }}). See the 'mutation' matrix jobs above for the specific shard and error. Not computing an aggregate score."
+          exit 1
+
+      - name: Download all shard reports
+        if: ${{ needs.mutation.result == 'success' }}
+        # Zero shard artifacts is a real, legitimate outcome (e.g. every
+        # shard's --in-diff found nothing mutable) — never let a missing
+        # artifact itself fail this job; the scoring step below decides
+        # what an empty download means.
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: mutants-report-shard-*
+          path: downloaded
+
+      - name: Compute aggregate score and enforce threshold
+        id: score
+        if: ${{ needs.mutation.result == 'success' }}
+        env:
+          THRESHOLD: ${{ inputs.threshold }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          threshold="${THRESHOLD:-}"
+          if [[ -z "$threshold" ]]; then
+            echo "::error::threshold input is required"
+            exit 1
+          fi
+
+          # Every shard already passed its own "Guard against a silent
+          # harness failure" step (or this job would have failed fast
+          # above) — so by this point, any shard with no output legitimately
+          # had nothing to mutate. Summing zero real evidence across all
+          # shards is therefore a genuine "nothing to score" outcome, not a
+          # harness bug: same shape as the original single-job scorer's
+          # own total==0 branch, just aggregated across N directories.
           count_lines() {
-            if [[ -f "$1" ]]; then
-              grep -c . "$1" 2>/dev/null || true
-            else
-              echo 0
-            fi
+            local pattern="$1" total=0 f n
+            for f in downloaded/mutants-report-shard-*/"${pattern}"; do
+              n=$(grep -c . "$f" 2>/dev/null || true)
+              total=$(( total + ${n:-0} ))
+            done
+            echo "$total"
           }
 
-          caught=$(count_lines mutants.out/caught.txt);     caught=${caught:-0}
-          missed=$(count_lines mutants.out/missed.txt);     missed=${missed:-0}
-          timed_out=$(count_lines mutants.out/timeout.txt); timed_out=${timed_out:-0}
-          unviable=$(count_lines mutants.out/unviable.txt); unviable=${unviable:-0}
+          caught=$(count_lines caught.txt)
+          missed=$(count_lines missed.txt)
+          timed_out=$(count_lines timeout.txt)
+          unviable=$(count_lines unviable.txt)
 
-          # Unviable mutants (the mutation does not compile) are excluded from
-          # the score deliberately: no test could ever have caught them.
+          # Unviable mutants (the mutation does not compile) are excluded
+          # from the score deliberately: no test could ever have caught them.
           total=$(( caught + missed ))
-          echo "Caught: ${caught}  Missed: ${missed}  Timeout: ${timed_out}  Unviable: ${unviable}"
+          echo "Caught: ${caught}  Missed: ${missed}  Timeout: ${timed_out}  Unviable: ${unviable} (summed across all shards)"
 
           if [[ "$total" -eq 0 ]]; then
-            # Reached only with real outcome files present — e.g. an --in-diff
-            # run whose diff touched no mutable code.
-            echo "::notice title=Mutation Score::cargo-mutants ran and found no viable mutants (unviable: ${unviable}) — nothing to score."
+            echo "::notice title=Mutation Score::no shard reported any caught/missed mutants — either every shard found nothing to mutate (e.g. an --in-diff run touching no mutable code) or unviable-only. Nothing to score; marking as passed."
             echo "score=100" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -554,20 +790,10 @@ jobs:
           echo "Score: ${score}%  Threshold: ${threshold}%"
 
           if [[ "$score" -lt "$threshold" ]]; then
-            echo "::error title=Mutation Score Too Low::Score ${score}% is below threshold ${threshold}%. Caught ${caught}/${total} mutants. Add tests that exercise more code paths."
-            echo "Surviving mutants:"
-            head -20 mutants.out/missed.txt || true
+            echo "::error title=Mutation Score Too Low::Score ${score}% is below threshold ${threshold}%. Caught ${caught}/${total} mutants across all shards. Add tests that exercise more code paths."
+            echo "Surviving mutants (first 20, across all shards):"
+            cat downloaded/mutants-report-shard-*/missed.txt 2>/dev/null | head -20 || true
             exit 1
           fi
 
-          echo "::notice title=Mutation Score OK::Score ${score}% ≥ threshold ${threshold}% (${caught}/${total} mutants caught)."
-
-      # Upload missed/timeout mutant lists to make actionable findings visible.
-      - name: Upload mutants output
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: mutants-report
-          path: ${{ inputs.working-directory }}/mutants.out/
-          retention-days: 7
-          if-no-files-found: ignore
+          echo "::notice title=Mutation Score OK::Score ${score}% ≥ threshold ${threshold}% (${caught}/${total} mutants caught across all shards)."
