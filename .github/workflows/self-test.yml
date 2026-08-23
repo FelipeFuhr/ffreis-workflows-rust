@@ -212,6 +212,13 @@ jobs:
       # 80; the previous 50 was too permissive to detect regressions in
       # the mutation gating logic itself.
       threshold: 80
+      # Deliberately the UNSHARDED path (shard-count: 1) — this job and
+      # mutation-measures-real-outcomes below together exercise BOTH code
+      # paths in self-test: this one covers the pre-sharding single-job
+      # shape, the other (left at the default shard-count) covers the
+      # matrix + mutation-aggregate summing path against a fixture with a
+      # KNOWN non-100 expected score.
+      shard-count: 1
       # Public repo: self-hosted structurally unavailable — pin explicitly.
       runner: '["ubuntu-latest"]'
 

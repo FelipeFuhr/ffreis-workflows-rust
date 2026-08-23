@@ -187,6 +187,81 @@ check, benchmarks, and Miri.
     have historically passed an invalid `packages:` key that GitHub Actions
     silently drops (not a supported input; fix at the caller, not here).
 
+13. **`rust-mutation.yml`'s `runner` input defaults to the `heavy` self-hosted
+    tier (`["self-hosted","local","heavy"]`), not `light` and NOT `xl`.**
+    cargo-mutants rebuilds the crate once per mutant and is the single most
+    memory-hungry job in the fleet; the `light` tier is a 2Gi pod, and
+    because the GitHub runner AGENT shares that pod's cgroup with the build,
+    the agent itself gets OOM-killed before the job ever reaches `Compute
+    score and enforce threshold`. That surfaces as "the self-hosted runner
+    lost communication with the server" with `BlobNotFound` job logs —
+    indistinguishable from a real network outage unless you check whether the
+    scoring step ran — and was misdiagnosed as flaky infra for multiple
+    sessions before being traced to the pod (measured live: 1714Mi against
+    the 2Gi limit). Every other reusable `rust-*.yml` workflow in this repo
+    still defaults `runner` to `light`; do not "fix" those too without
+    separately verifying they need it — `rust-mutation.yml` is the outlier
+    because it is the only workflow that rebuilds the crate per mutant rather
+    than once.
+
+    **A first correction over-shot to `xl` (8Gi) — do not repeat that
+    mistake.** The reasoning at the time ("xl fits the footprint and scales
+    to zero like light") sounded right but was never checked against
+    scheduling: xl sits at 0 replicas because it is UNSCHEDULABLE, not idle.
+    Its 8Gi pod cannot be admitted on either fleet node while light/heavy are
+    already running (burst-node: 9.71Gi allocatable, ~4.7Gi free;
+    local-server: 7.58Gi allocatable, ~3.6Gi free — job-arbiter only
+    schedules a class when a single node can hold it), so a mutation job on
+    xl queues forever instead of failing — worse than the OOM it replaced,
+    because a queued job never surfaces as a failure at all. `heavy` (3Gi) is
+    50% headroom over the 2Gi that OOM'd and IS schedulable alongside
+    light/heavy on either node. Evidence it's enough without measuring a
+    third tier: `ffreis-job-arbiter`'s mutation job PASSED on the 2Gi light
+    tier; only `ffreis-cluster-warden`'s failed there — so the real
+    requirement sits between 2Gi and something modest, not up at 8Gi. If a
+    future crate's mutation job OOMs even on `heavy`, measure its actual
+    footprint before reaching for `xl` again; do not assume by elimination.
+
+14. **`rust-mutation.yml`'s `mutation` job is a matrix over `shard-count`
+    shards (default 4), aggregated by a separate `mutation-aggregate` job —
+    it is a JOB-SIZE fix, not a wall-clock fix.** The fleet's `heavy`
+    self-hosted class (item 13) is capped at `max_replicas: 1`
+    (`platform/ffreis-home-infra` ansible role `job_arbiter`, `ci-build`
+    class), so shards queue and run SERIALLY on one pod — sharding here only
+    guarantees no single job can exceed `timeout-minutes` (default 85,
+    deliberately under job-arbiter's 90-min stale-job reaper) or get
+    silently killed mid-run; it does NOT parallelize the work, and adds
+    roughly N× the fixed per-shard overhead (checkout, toolchain install,
+    baseline test run) to total wall-clock. Do not raise the default
+    `shard-count` to "go faster" — it won't, under today's runner capacity —
+    and do not add a second `runner: heavy` replica to make it actually
+    parallel without first checking it fits: 2 × 3Gi = 6Gi exceeds either
+    node's currently-free headroom (burst-node ~4.7Gi, local-server ~3.6Gi),
+    the same unschedulable trap item 13's `xl` mistake fell into.
+
+    The `in-diff` input (default `false`) is the lever that actually reduces
+    wall-clock — it scopes the WORK (only the PR's changed `.rs` lines)
+    rather than just redistributing the same work across more jobs. It
+    defaults to `false` at this reusable-workflow level, not `true`,
+    DELIBERATELY: this repo's own `renovate/github-actions.json` preset
+    auto-merges minor/patch/digest bumps to `uses: FelipeFuhr/...@SHA` pins
+    with no human review, so flipping the default here would silently
+    narrow every already-migrated caller's mutation gate from whole-crate to
+    diff-only the moment Renovate bumps their pin — with no scheduled
+    full-sweep recovering the coverage that was lost, since (verified
+    2026-08-23) not one fleet consumer of this workflow has a `schedule:`
+    trigger for a full/unscoped run. That is exactly the "silently weaken a
+    gate" failure mode the workspace rules forbid. Adopt `in-diff: true`
+    per-repo, explicitly, paired with a companion `schedule:`-triggered full
+    run (`in-diff` omitted/false, `shard-count` raised for that crate) in the
+    SAME PR — never as a bare default flip.
+
+    On a `pull_request` event with `in-diff` actually active, `shard-plan`
+    collapses `shard-count` to 1 automatically regardless of the caller's
+    input — a diff-scoped PR run is typically a handful of mutants (measured:
+    7 mutants / 109s on ffreis-job-arbiter), and sharding that would pay N×
+    fixed overhead for work that finishes in under a minute unsharded.
+
 ## Structure
 
 ```
