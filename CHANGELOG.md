@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.1](https://github.com/FelipeFuhr/ffreis-workflows-rust/compare/v2.2.0...v2.2.1) (2026-08-23)
+
+
+### Bug Fixes
+
+* **mutation:** heavy runner default, sharded matrix, sub-90-min timeout ([#96](https://github.com/FelipeFuhr/ffreis-workflows-rust/issues/96)) ([37e2d13](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/37e2d13a25fff83c2bd8ae662ead5b6093ff3799))
+
 ## [2.2.0](https://github.com/FelipeFuhr/ffreis-workflows-rust/compare/v2.1.2...v2.2.0) (2026-08-21)
 
 
