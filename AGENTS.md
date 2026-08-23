@@ -187,6 +187,22 @@ check, benchmarks, and Miri.
     have historically passed an invalid `packages:` key that GitHub Actions
     silently drops (not a supported input; fix at the caller, not here).
 
+13. **`rust-mutation.yml`'s `runner` input defaults to the `xl` self-hosted tier
+    (`["self-hosted","local","xl"]`), not `light`.** cargo-mutants rebuilds the
+    crate once per mutant and is the single most memory-hungry job in the
+    fleet; the `light` tier is a 2Gi pod, and because the GitHub runner AGENT
+    shares that pod's cgroup with the build, the agent itself gets OOM-killed
+    before the job ever reaches `Compute score and enforce threshold`. That
+    surfaces as "the self-hosted runner lost communication with the server"
+    with `BlobNotFound` job logs — indistinguishable from a real network
+    outage unless you check whether the scoring step ran — and was
+    misdiagnosed as flaky infra for multiple sessions before being traced to
+    the pod (measured live: 1714Mi against the 2Gi limit). Every other
+    reusable `rust-*.yml` workflow in this repo still defaults `runner` to
+    `light`; do not "fix" those too without separately verifying they need
+    it — `rust-mutation.yml` is the outlier because it is the only workflow
+    that rebuilds the crate per mutant rather than once.
+
 ## Structure
 
 ```

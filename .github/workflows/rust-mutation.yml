@@ -57,10 +57,26 @@ on:
         default: false
       runner:
         description: |
-          JSON-encoded runner label(s). Default: self-hosted [self-hosted, local]. Pass '["ubuntu-latest"]' for GitHub-hosted.
+          JSON-encoded runner label(s). Default: self-hosted xl tier
+          [self-hosted, local, xl]. Pass '["ubuntu-latest"]' for GitHub-hosted.
+
+          scan-fix(ci:oom): was [self-hosted, local] (the light tier, a 2Gi
+          pod). cargo-mutants rebuilds the crate once per mutant and is the
+          single most memory-hungry job in the fleet; on the 2Gi pod it
+          exhausts memory, and because the GitHub runner agent shares the pod
+          cgroup with the build, the agent itself gets OOM-killed before the
+          job ever reaches "Compute score and enforce threshold". That
+          surfaces as "the self-hosted runner lost communication with the
+          server" with BlobNotFound job logs — not a mutation-score failure —
+          and has repeatedly been misread as flaky network/infra rather than
+          a resource-tier mismatch. Measured live: a light-tier run sat at
+          1714Mi against its 2Gi limit. xl (8Gi) fits cargo-mutants' actual
+          footprint and scales to zero the same way light does, so this is
+          not a cost/idle tradeoff. Callers that already pass an explicit
+          `runner:` (e.g. `heavy`) are unaffected by this default change.
         required: false
         type: string
-        default: '["self-hosted","local"]'
+        default: '["self-hosted","local","xl"]'
       cargo-profile-debug:
         description: >-
           Sets CARGO_PROFILE_DEV_DEBUG — the dev profile's `debug` level, which
