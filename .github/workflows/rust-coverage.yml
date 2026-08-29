@@ -329,11 +329,16 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -z "$CODECOV_TOKEN" ]]; then
-            if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
-              echo "::error::CODECOV_TOKEN secret is required for push coverage uploads."
-              exit 1
-            fi
-            echo "CODECOV_TOKEN not available (likely fork PR); skipping upload."
+            # scan-fix(ci:codecov-token-optional): this secret's own `secrets:`
+            # block above declares it `required: false` — a caller repo that
+            # never wired up Codecov must not have every push to its default
+            # branch fail here. The real quality gate is the coverage-threshold
+            # check just above, which already ran and passed; the upload below
+            # is supplementary reporting, not a correctness gate. Previously
+            # this hard-failed push events only (treating "no token" as fine on
+            # a PR but fatal on a push), contradicting the declared-optional
+            # secret and blocking every un-configured repo's main branch.
+            echo "CODECOV_TOKEN not available; skipping upload."
             echo "skip_upload=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip_upload=false" >> "$GITHUB_OUTPUT"

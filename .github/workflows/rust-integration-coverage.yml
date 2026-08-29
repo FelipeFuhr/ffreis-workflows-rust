@@ -341,11 +341,12 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -z "$CODECOV_TOKEN" ]]; then
-            if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
-              echo "::error::CODECOV_TOKEN secret is required for push coverage uploads."
-              exit 1
-            fi
-            echo "CODECOV_TOKEN not available (likely fork PR); skipping upload."
+            # scan-fix(ci:codecov-token-optional): mirrors rust-coverage.yml's
+            # fix — this secret is declared `required: false`, so an
+            # un-configured repo's push events must not hard-fail here. The
+            # coverage-threshold check above already ran and passed; this
+            # upload is supplementary reporting, not a correctness gate.
+            echo "CODECOV_TOKEN not available; skipping upload."
             echo "skip_upload=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip_upload=false" >> "$GITHUB_OUTPUT"
