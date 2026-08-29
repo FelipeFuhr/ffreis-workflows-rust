@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.2](https://github.com/FelipeFuhr/ffreis-workflows-rust/compare/v2.2.1...v2.2.2) (2026-08-29)
+
+
+### Bug Fixes
+
+* **coverage:** don't hard-fail push events when CODECOV_TOKEN is unset ([#98](https://github.com/FelipeFuhr/ffreis-workflows-rust/issues/98)) ([4161912](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/4161912c076fef554ce449b231f1ee4b95d4f77d))
+
 ## [2.2.1](https://github.com/FelipeFuhr/ffreis-workflows-rust/compare/v2.2.0...v2.2.1) (2026-08-23)
 
 
