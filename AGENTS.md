@@ -172,6 +172,16 @@ check, benchmarks, and Miri.
     workflow default (not just a caller convention) because integration suites
     commonly share fixtures/DB state/env vars that break under parallel execution.
 
+11b. **`CODECOV_TOKEN` is `required: false` on both coverage workflows'
+    `secrets:` block, and the upload-gate step must actually honor that on
+    EVERY trigger, push included.** A caller repo with no Codecov integration
+    configured must never have its default-branch CI fail over this — the
+    coverage-threshold check earlier in the same job is the real correctness
+    gate; the Codecov upload is supplementary reporting. Do not reintroduce a
+    push-specific hard-fail without deliberately flipping this secret to
+    `required: true` fleet-wide first (i.e. auditing every caller for the
+    token before tightening the contract, not after).
+
 12. **`rust-mutation.yml`'s `mutants-args` default (`''`) mutates the WHOLE
     workspace** — every crate, not just the one under review. This is the exact
     failure mode that has filled the workspace's build machine's disk before.

@@ -11,10 +11,12 @@ on:
 # is skipped on fork pull requests (secrets are not available to forks), but
 # runs on all other events and fails if the token is absent.
 #
-# rust-coverage requires CODECOV_TOKEN to be configured for push events;
-# when the token is missing, coverage runs on push will fail rather than
-# silently skipping the upload. Ensure CODECOV_TOKEN is set in repository
-# or organization secrets before enabling this self-test workflow.
+# rust-coverage and rust-integration-coverage treat CODECOV_TOKEN as fully
+# optional on every trigger, push included: when the token is missing, the
+# upload step is skipped with a log line instead of failing the job (the
+# workflow_call secrets block declares it `required: false`). This self-test
+# workflow does not pass CODECOV_TOKEN through, so its own coverage /
+# integration-coverage jobs exercise that skip path on every push to main.
 #
 # rust-miri uses --lib to avoid compiling the Criterion benchmark harness
 # under Miri (Criterion uses features incompatible with the Miri interpreter).
