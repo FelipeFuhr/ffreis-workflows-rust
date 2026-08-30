@@ -16,6 +16,9 @@ target
 # SonarQube scanner artifacts
 .scannerwork/
 
+# Copied in locally by the ci-local fallback tool (quality-kit); not repo source
+scripts/run-ci-local.sh
+
 # RustRover
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore

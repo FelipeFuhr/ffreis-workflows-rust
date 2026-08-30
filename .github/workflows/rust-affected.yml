@@ -225,7 +225,23 @@ jobs:
           repo_root="$(git rev-parse --show-toplevel)"
           while IFS=$'\t' read -r name absdir; do
             [[ -z "$name" ]] && continue
-            reldir="${absdir#"$repo_root"/}"
+            # A root package's crate directory IS repo_root.  The old
+            # prefix-only trim left that value absolute (there is no trailing
+            # slash to remove), so no repo-relative changed path could ever
+            # match it.  Represent the root package explicitly as ".".
+            #
+            # Do not try to make an out-of-repository metadata path selective:
+            # that would turn an uncertain mapping into a false skip.  A
+            # whole-workspace fallback is the safe contract for this workflow.
+            if [[ "$absdir" == "$repo_root" ]]; then
+              reldir="."
+            elif [[ "$absdir" == "$repo_root/"* ]]; then
+              reldir="${absdir#"$repo_root"/}"
+            else
+              echo "::warning::crate directory is outside the repository ($absdir); building everything"
+              emit "--workspace" "true" ""
+              exit 0
+            fi
             NAME_BY_DIR["$reldir"]="$name"
             MEMBER_NAMES+=("$name")
           done <<< "$members"
@@ -247,7 +263,7 @@ jobs:
           declare -A AFFECTED=()
           for f in "${changed[@]}"; do
             for reldir in "${!NAME_BY_DIR[@]}"; do
-              if [[ "$f" == "$reldir/"* ]]; then
+              if [[ "$reldir" == "." || "$f" == "$reldir/"* ]]; then
                 AFFECTED["${NAME_BY_DIR[$reldir]}"]=1
               fi
             done
@@ -267,9 +283,12 @@ jobs:
 
           # --- Emit result ----------------------------------------------------
           if [[ ${#AFFECTED[@]} -eq 0 ]]; then
-            # Changed files exist but none under a crate dir (docs, deny.toml,
-            # CI config). Nothing to compile.
-            emit "" "false" ""
+            # A changed path that metadata could not associate with a crate
+            # may be a build script, generated source, or an unusual layout.
+            # Running too much is safe; skipping a required validation job is
+            # not.  This branch is deliberately fail-closed.
+            echo "::warning::changed paths did not map to a crate; building everything"
+            emit "--workspace" "true" ""
             exit 0
           fi
           if [[ ${#AFFECTED[@]} -eq ${#MEMBER_NAMES[@]} ]]; then

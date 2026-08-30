@@ -14,8 +14,10 @@ check, benchmarks, and Miri.
    into their `*-args` inputs. It walks the **intra-workspace reverse-dependency
    graph** from `cargo metadata`, so editing a shared crate expands to every
    dependent (no false skips). It is over-approximating by design and falls back to
-   `--workspace` on any uncertainty (unknown base commit, root manifest/lockfile
-   change). **Push events always return `--workspace`** so a downstream
+   `--workspace` on any uncertainty (unknown base commit, root manifest/lockfile,
+   unmappable path). A single package at the repository root is represented
+   explicitly; never make either case selective. **Push events always return
+   `--workspace`** so a downstream
    delete-sync upload (e.g. lambdas-packer on main) never drops unchanged
    artifacts — selective build is a PR-only optimisation. Callers gate compile
    jobs on its `changed` output.
