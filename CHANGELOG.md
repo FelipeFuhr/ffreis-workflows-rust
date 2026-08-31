@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.3.0](https://github.com/FelipeFuhr/ffreis-workflows-rust/compare/v2.2.2...v2.3.0) (2026-08-31)
+
+
+### Features
+
+* **mutation:** expose fail-fast as a workflow_call input ([#103](https://github.com/FelipeFuhr/ffreis-workflows-rust/issues/103)) ([87bd3e7](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/87bd3e7845b239b9ef505c925a32f1a438926004))
+
+
+### Bug Fixes
+
+* **ci:** run validation for root Rust crates in rust-affected.yml ([#99](https://github.com/FelipeFuhr/ffreis-workflows-rust/issues/99)) ([c574690](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/c574690a2d222a7931f5b942dc18dc507dee389d))
+
 ## [2.2.2](https://github.com/FelipeFuhr/ffreis-workflows-rust/compare/v2.2.1...v2.2.2) (2026-08-29)
 
 
