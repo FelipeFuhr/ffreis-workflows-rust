@@ -229,6 +229,19 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -n "$PRIVATE_DEPS_TOKEN" ]]; then
+            # scan-fix(ci:extraheader-shadow): actions/checkout persists a LOCAL
+            # http.https://github.com/.extraheader (Authorization: Basic, built from
+            # this job's own repo-scoped GITHUB_TOKEN) in the checked-out repo's git
+            # config. Git config lookup walks up from CWD to find that config, so it
+            # still applies when cargo shells out to `git fetch` for a DIFFERENT repo
+            # (a private git dependency) while CWD is inside this checkout — even
+            # though url.insteadOf below rewrites the URL to embed PRIVATE_DEPS_TOKEN.
+            # GitHub honors the explicit extraheader over the URL-embedded credential,
+            # so the ambient GITHUB_TOKEN (no access to the dependency's repo) wins and
+            # the fetch 403s with "Write access to repository not granted" — a
+            # misleading message for what is really "wrong token used". Unset it so our
+            # PRIVATE_DEPS_TOKEN rewrite is the only credential in play.
+            git config --local --unset-all http.https://github.com/.extraheader || true
             git config --global url."https://x-access-token:${PRIVATE_DEPS_TOKEN}@github.com/".insteadOf "https://github.com/"
             # cargo's libgit2 backend does not reliably honor url.insteadOf
             # credential rewriting; force it to shell out to system git,
