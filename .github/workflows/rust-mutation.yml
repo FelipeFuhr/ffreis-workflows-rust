@@ -40,6 +40,13 @@ name: Rust Mutation Testing
 # redistributing it across more same-size jobs) is the `in-diff` input,
 # below — prefer that for PR-triggered runs; reserve a wide shard-count for
 # the full/scheduled sweep that recovers whole-crate coverage.
+#
+# `mutants-fail-fast` (added after 2026-08-29, still unreleased as of this
+# comment): strategy.fail-fast for the shard matrix, default false. On a
+# capacity-constrained pool like this fleet's serial "heavy" tier above, a
+# genuine infra fault in one shard otherwise still burns the remaining
+# shards' full serial wall-clock before mutation-aggregate fails anyway —
+# see that input's own description for when to flip it to true.
 
 on:
   workflow_call:
@@ -245,6 +252,33 @@ on:
         required: false
         type: number
         default: 4
+      mutants-fail-fast:
+        description: >-
+          strategy.fail-fast for the shard matrix (see `shard-count`).
+          Default false, matching cargo-mutants' own upstream CI example
+          ("collect all mutants even if some are missed" —
+          https://github.com/sourcefrog/cargo-mutants/blob/main/examples/workflows/sharded.yml):
+          a shard's own job status only reflects a genuine harness/build
+          failure, never a missed mutant (missed-mutant exit codes are
+          swallowed — see the "Guard against a silent harness failure"
+          step), so leaving this false costs nothing on the common path and
+          guarantees mutation-aggregate always sees every shard's data
+          before it decides pass/fail.
+
+          Consider true for a caller whose runner pool is capacity-
+          constrained enough that shards effectively queue and run
+          SERIALLY rather than in parallel (see the job-topology note at
+          the top of this file — this fleet's own "heavy" tier is exactly
+          this case, capped at max_replicas: 1). There, a genuine infra
+          fault in shard 0 wastes real serial wall-clock finishing shards
+          1..N-1 before mutation-aggregate fails anyway on "at least one
+          shard did not succeed" — cancelling the rest early via
+          fail-fast: true recovers that time. Less useful on a pool with
+          real parallel capacity, where the other shards finish at roughly
+          the same time regardless of whether one was cancelled.
+        required: false
+        type: boolean
+        default: false
     outputs:
       mutation-score:
         description: 'Achieved mutation score (integer, 0–100), summed across all shards.'
@@ -304,7 +338,7 @@ jobs:
     if: ${{ inputs.run_on_draft || vars.CI_RUN_ON_DRAFT == 'true' || github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: Mutation score (cargo-mutants)
     strategy:
-      fail-fast: false
+      fail-fast: ${{ inputs.mutants-fail-fast }}
       matrix:
         shard: ${{ fromJson(needs.shard-plan.outputs.shards) }}
     # PUBLIC repos are FORCED onto GitHub-hosted runners, overriding `runner`.
