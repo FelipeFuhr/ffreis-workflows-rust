@@ -222,6 +222,67 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Resolve Sonar target
+        # SonarCloud's free tier only scans PUBLIC repos (private = 403,
+        # confirmed live — same fix already applied in tf-sonar.yml). Private
+        # repos route to the self-hosted SonarQube server ffreis-home-infra's
+        # `sonarqube` role deploys into the same cluster this job runs on
+        # (scale-to-zero — see that role's README).
+        id: target
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event.repository.visibility }}" == "public" ]]; then
+            echo "host_url=https://sonarcloud.io" >> "$GITHUB_OUTPUT"
+            echo "is_local=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "host_url=http://sonarqube.ci.svc.cluster.local:9000" >> "$GITHUB_OUTPUT"
+            echo "is_local=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install kubectl (local SonarQube routing only)
+        if: steps.target.outputs.is_local == 'true'
+        run: |
+          set -euo pipefail
+          krel="$(curl -fsSL https://dl.k8s.io/release/stable.txt)"
+          curl -fsSLO "https://dl.k8s.io/release/${krel}/bin/linux/amd64/kubectl"
+          curl -fsSLO "https://dl.k8s.io/release/${krel}/bin/linux/amd64/kubectl.sha256"
+          echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/kubectl
+
+      - name: Scale up local SonarQube and wait for readiness
+        # RBAC for this is the `sonarqube-scaler` Role in ffreis-home-infra's
+        # sonarqube role, bound to this runner pod's own `default`
+        # ServiceAccount (its token is already mounted by k8s default
+        # behavior — nothing extra to configure here) — scoped to get+patch
+        # on exactly the one named Deployment `sonarqube`, nothing else.
+        if: steps.target.outputs.is_local == 'true'
+        run: |
+          set -euo pipefail
+          kc=(kubectl --server=https://kubernetes.default.svc
+              --certificate-authority=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+              --token="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)"
+              -n ci)
+
+          now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          "${kc[@]}" patch deployment sonarqube --type=merge -p \
+            "{\"spec\":{\"replicas\":1},\"metadata\":{\"annotations\":{\"sonarqube.ffreis/last-scaled-up\":\"${now}\"}}}"
+
+          # Cold-boot budget matches ffreis-home-infra's own
+          # sonarqube_ready_timeout_seconds default (see that role's
+          # defaults/main.yml for the reasoning) — kept in sync manually,
+          # both are small homelab-scoped constants.
+          echo "waiting for sonarqube to become ready..."
+          deadline=$(( $(date +%s) + 360 ))
+          until [[ "$("${kc[@]}" get deployment sonarqube -o jsonpath='{.status.readyReplicas}')" == "1" ]]; do
+            if [[ $(date +%s) -ge $deadline ]]; then
+              echo "::error::sonarqube did not become ready within 360s" >&2
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "sonarqube ready"
+
       - name: Configure git for private cargo dependencies
         env:
           PRIVATE_DEPS_TOKEN: ${{ secrets.PRIVATE_DEPS_TOKEN }}
@@ -293,6 +354,7 @@ jobs:
           ORGANIZATION_VAR: ${{ vars.SONAR_ORGANIZATION }}
           OWNER: ${{ github.repository_owner }}
           REPO: ${{ github.event.repository.name }}
+          IS_LOCAL: ${{ steps.target.outputs.is_local }}
         run: |
           set -euo pipefail
           PROJECT_KEY="${PROJECT_KEY_INPUT:-}"
@@ -311,14 +373,19 @@ jobs:
 
           EXTRA=""
           [ -n "$PROJECT_KEY" ] && EXTRA="$EXTRA -Dsonar.projectKey=$PROJECT_KEY"
-          [ -n "$ORGANIZATION" ] && EXTRA="$EXTRA -Dsonar.organization=$ORGANIZATION"
+          # "organization" is a SonarCloud multi-tenancy concept — self-hosted
+          # SonarQube Community Edition rejects the -Dsonar.organization
+          # argument outright, so it must be omitted entirely for local scans.
+          if [[ "$IS_LOCAL" != "true" && -n "$ORGANIZATION" ]]; then
+            EXTRA="$EXTRA -Dsonar.organization=$ORGANIZATION"
+          fi
           echo "args=$EXTRA" >> "$GITHUB_OUTPUT"
 
       - name: SonarCloud Scan
         uses: SonarSource/sonarqube-scan-action@a31c9398be7ace6bbfaf30c0bd5d415f843d45e9 # nosemgrep: generic.secrets.security.detected-sonarqube-docs-api-key.detected-sonarqube-docs-api-key
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: https://sonarcloud.io
+          SONAR_HOST_URL: ${{ steps.target.outputs.host_url }}
         with:
           projectBaseDir: ${{ inputs.working-directory }}
           args: >
