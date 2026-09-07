@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.4.0](https://github.com/FelipeFuhr/ffreis-workflows-rust/compare/v2.3.0...v2.4.0) (2026-09-07)
+
+
+### Features
+
+* **ci:** expose timeout-minutes on rust-build and rust-docs ([#104](https://github.com/FelipeFuhr/ffreis-workflows-rust/issues/104)) ([100c5ea](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/100c5ea883c1dae5bd97f0df1ee74bb49eb0f65f))
+
 ## [2.3.0](https://github.com/FelipeFuhr/ffreis-workflows-rust/compare/v2.2.2...v2.3.0) (2026-08-31)
 
 
