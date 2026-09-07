@@ -95,6 +95,19 @@ on:
           higher value (e.g. the runner's core count).
         type: string
         default: "auto"
+      timeout-minutes:
+        description: >-
+          Job timeout in minutes. Default 30, raised from a hardcoded
+          15: the same workspace hit the 15-minute cap exactly (15m07s)
+          on PR #125's docs job.
+          Keep any override strictly BELOW job-arbiter's 90-minute reaper
+          (platform/ffreis-home-infra ansible role job_arbiter:
+          `max_in_progress_duration_secs: 90 * 60`). A job that exceeds its
+          own timeout-minutes fails with an attributable "exceeded the
+          maximum execution time" message; one that instead runs into the
+          external reaper is cancelled silently and reads as flaky infra.
+        type: number
+        default: 30
     secrets:
       PRIVATE_DEPS_TOKEN:
         description: "Token with read access to private git-dependency repos (e.g. FLEET_READ_TOKEN). Optional — omit if the workspace has no private cargo git deps."
@@ -103,7 +116,7 @@ on:
 jobs:
   docs:
     if: ${{ inputs.run_on_draft || vars.CI_RUN_ON_DRAFT == 'true' || github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
-    timeout-minutes: 15
+    timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       contents: read
       # Only used when `sccache` + `sccache-role-arn` are set, to mint an
