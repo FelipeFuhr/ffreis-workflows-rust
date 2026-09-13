@@ -1,0 +1,32 @@
+{
+  "AGENTS.md": {
+    "preamble_bytes": 292,
+    "sections": [
+      {
+        "heading": "Structure",
+        "file": ".claude/reference/structure.md",
+        "bytes": 232
+      },
+      {
+        "heading": "Build/test",
+        "file": ".claude/reference/build-test.md",
+        "bytes": 225
+      },
+      {
+        "heading": "Cross-repo role",
+        "file": ".claude/reference/cross-repo-role.md",
+        "bytes": 146
+      },
+      {
+        "heading": "Public repo \u2014 private-repo hygiene",
+        "file": ".claude/reference/public-repo-private-repo-hygiene.md",
+        "bytes": 408
+      },
+      {
+        "heading": "Keeping this file current",
+        "file": ".claude/reference/keeping-this-file-current.md",
+        "bytes": 298
+      }
+    ]
+  }
+}
