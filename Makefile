@@ -1,13 +1,13 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help lint test check fmt-check secrets-scan-staged lefthook-bootstrap lefthook-install hooks setup
+.PHONY: help lint lint-instructions test check fmt-check secrets-scan-staged lefthook-bootstrap lefthook-install hooks setup
 
 ## help: Show this help message
 help:
 	@grep -E '^##' $(MAKEFILE_LIST) | sed 's/## //'
 
 ## lint: Validate workflow YAML + clippy on examples/hello
-lint:
+lint: lint-instructions
 	@echo "==> Linting GitHub Actions workflow files..."
 	@if command -v actionlint >/dev/null 2>&1; then \
 		actionlint .github/workflows/*.yml; \
@@ -24,6 +24,10 @@ lint:
 		echo "==> clippy $$ex"; \
 		( cd "$$ex" && cargo clippy --all-targets --all-features -- -D warnings ) || exit 1; \
 	done
+
+## lint-instructions: verify the AGENTS.md rules/reference split hasn't silently dropped a rule
+lint-instructions:
+	@bash scripts/check-instructions.sh
 
 ## fmt-check: Check Rust example formatting
 fmt-check:
