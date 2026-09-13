@@ -272,3 +272,35 @@ paths:
     7 mutants / 109s on ffreis-job-arbiter), and sharding that would pay N×
     fixed overhead for work that finishes in under a minute unsharded.
 
+
+15. **A runner-label array means opposite things depending on how it is
+    consumed. `runner:` inputs are FLAT; `rust-build.yml`'s `os-list` is a
+    MATRIX AXIS and must be NESTED.**
+
+    ```yaml
+    runs-on: ${{ fromJson(inputs.runner) }}     # the array IS one label set
+    runs-on: ${{ matrix.os }}                   # each ELEMENT of the array is
+      # with  os: ${{ fromJson(inputs.os-list) }}  one leg's WHOLE label set
+    ```
+
+    So `'["self-hosted","local"]'` is correct for every `runner:` input in this
+    repo and WRONG for `os-list`, where it expands to two legs labelled
+    `self-hosted` and `local` separately. That is not a loud failure:
+    job-arbiter's `match_class` requires a class's configured labels to be a
+    SUBSET of the job's labels, so a single-label job matches zero classes,
+    never triggers a scale-up, and is logged `"reason":"queued_unroutable"` —
+    yet it still runs opportunistically on any pod a sibling job already scaled
+    up. It strands only when nothing else is scaling that tier.
+
+    v2.0.0 (#74) rewrote every runner default from `["ubuntu-latest"]` to
+    `["self-hosted","local"]` in one pass; correct for the 17 `runner:` inputs,
+    wrong for `os-list`, and it went unnoticed across the whole v2.x line until
+    `ffreis-forma-lambdas-rust` #21. `os-list`'s default is now
+    `'[["self-hosted","local"]]'`. A multi-leg value still works
+    (`'[["self-hosted","local"],["ubuntu-latest"]]'` = two legs), and a
+    single-label GitHub-hosted leg needs no nesting (`'["ubuntu-latest"]'`).
+
+    `tests/runner_labels.bats` asserts BOTH directions structurally over every
+    workflow — matrix axes nested, directly-consumed inputs flat — so neither
+    a new matrix-axis workflow nor an over-eager sweep can reintroduce either
+    half. Do not "fix" a `runner:` input by nesting it.
