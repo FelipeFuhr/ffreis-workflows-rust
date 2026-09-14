@@ -8,13 +8,39 @@ on:
         type: string
         default: '["stable","1.88.0"]'
       os-list:
-        description: "JSON array of runner OS labels to build on"
+        description: >-
+          JSON array of matrix legs. Each ELEMENT becomes one build leg's
+          ENTIRE `runs-on` label set, so an element that needs several labels
+          must itself be an ARRAY:
+
+            '[["self-hosted","local"]]'          one leg, labels [self-hosted, local]
+            '["ubuntu-latest"]'                  one leg, label  [ubuntu-latest]
+            '[["self-hosted","local"],["ubuntu-latest"]]'
+                                                 two legs, one per runner type
+
+          A FLAT multi-label value is almost never what a caller means:
+          '["self-hosted","local"]' is TWO legs of ONE label each, not one
+          two-label leg. See the routing note on the default below.
         type: string
+        # ROUTING GUARD: this default must stay NESTED.
+        #
+        # `os-list` is a MATRIX AXIS (`os: ${{ fromJson(inputs.os-list) }}`,
+        # consumed as `runs-on: ${{ matrix.os }}`), NOT a label set like the
+        # `runner:` input every other rust-*.yml carries. The flat form
+        # '["self-hosted","local"]' therefore expanded to two legs labelled
+        # `self-hosted` and `local` SEPARATELY — and job-arbiter's match_class
+        # only matches when a class's configured labels are a SUBSET of the
+        # job's labels, so a single-label job matches ZERO classes, triggers no
+        # scale-up, and is logged `"reason":"queued_unroutable"`. It still
+        # lands opportunistically on a pod some sibling job already scaled up,
+        # which is why this hid from v2.0.0 (#74) until a repo whose build was
+        # the only thing on its tier stranded (ffreis-forma-lambdas-rust #21).
+        #
         # COST GUARD: default is Linux-only. macOS Actions minutes bill 10x;
         # callers opt in by passing os-list (e.g. a manual workflow_dispatch).
         # Do NOT add "macos-latest" to this default — it hits every caller's
         # push/PR flow at 10x (CI cost incident 2026-06).
-        default: '["self-hosted","local"]'
+        default: '[["self-hosted","local"]]'
       working-directory:
         description: "Directory containing the Cargo workspace"
         type: string
@@ -142,6 +168,8 @@ jobs:
       # Only used when `sccache` + `sccache-role-arn` are set, to mint an
       # OIDC token for the S3 cache backend. No-op otherwise.
       id-token: write
+    # `matrix.os` is this leg's WHOLE label set, so each element of `os-list`
+    # must carry every label the leg needs (see the input's routing guard).
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false

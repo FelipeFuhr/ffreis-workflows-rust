@@ -24,7 +24,7 @@ Replace `<sha>` with the commit SHA corresponding to the desired release tag. Av
 | `rust-fmt.yml` | `cargo fmt --all -- --check` | `toolchain`, `working-directory` |
 | `rust-lint.yml` | Clippy with `-- -D warnings` | `toolchain`, `working-directory`, `clippy-args` |
 | `rust-test.yml` | `cargo test` | `toolchain`, `working-directory`, `test-args`, `timeout-minutes` |
-| `rust-build.yml` | Matrix build across Rust versions and OS | `rust-versions` (JSON), `os-list` (JSON), `working-directory`, `build-args` |
+| `rust-build.yml` | Matrix build across Rust versions and runner legs | `rust-versions` (JSON), `os-list` (JSON **array of legs** — see [Matrix build](#matrix-build)), `working-directory`, `build-args` |
 | `rust-security.yml` | `cargo-audit` CVE scan (schedule weekly in caller) | `toolchain`, `working-directory`, `ignore-advisories` |
 | `rust-coverage.yml` | `cargo-llvm-cov` + Codecov upload (unit tests) | `toolchain`, `working-directory`, `coverage-args`, `coverage-threshold`, `codecov-flags`; secret `CODECOV_TOKEN` |
 | `rust-integration-coverage.yml` | `cargo-llvm-cov --include-ignored` + Codecov upload (integration tests), gated as a separate metric from unit coverage | `toolchain`, `working-directory`, `coverage-args`, `coverage-threshold`, `codecov-flags`; secret `CODECOV_TOKEN` |
@@ -79,13 +79,32 @@ jobs:
 
 ### Matrix build
 
+`os-list` is a **matrix axis**, not a label set: each *element* becomes one
+build leg's entire `runs-on`. A leg that needs several labels must therefore be
+an **array of its own**. This is the opposite of the `runner:` input every other
+`rust-*.yml` carries, which *is* consumed directly as the label set.
+
 ```yaml
   build:
-    uses: ffreis/ffreis-platform-workflows-rust/.github/workflows/rust-build.yml@<sha> # v1.x.y
+    uses: ffreis/ffreis-platform-workflows-rust/.github/workflows/rust-build.yml@<sha> # v2.x.y
     with:
       rust-versions: '["stable","1.88.0"]'
-      os-list: '["ubuntu-latest","macos-latest"]'
+      # One leg on the self-hosted pool (this is the default).
+      os-list: '[["self-hosted","local"]]'
       working-directory: app
+```
+
+```yaml
+      # Two legs, one per runner type.
+      os-list: '[["self-hosted","local"],["ubuntu-latest"]]'
+
+      # One leg on a GitHub-hosted runner. Single-label legs need no nesting.
+      os-list: '["ubuntu-latest"]'
+
+      # WRONG: two legs labelled `self-hosted` and `local` SEPARATELY. Neither
+      # matches a self-hosted runner class, so job-arbiter never scales for it
+      # and the run is logged `"reason":"queued_unroutable"`.
+      os-list: '["self-hosted","local"]'
 ```
 
 ### Security audit (scheduled weekly)
