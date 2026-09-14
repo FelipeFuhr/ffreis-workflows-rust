@@ -1,5 +1,16 @@
 # Changelog
 
+## [3.0.0](https://github.com/FelipeFuhr/ffreis-workflows-rust/compare/v2.4.0...v3.0.0) (2026-09-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* **rust-build:** callers that OMIT `os-list` go from four build legs to two, and the leg names change from `build (stable, self-hosted)` / `build (stable, local)` to `build (stable, self-hosted, local)`. Any repo listing the old names as required status checks must update them or its PRs will wait forever for a check that is no longer produced. Callers that pass `os-list` explicitly are unaffected.
+
+### Bug Fixes
+
+* **rust-build:** nest the os-list default onto one fully-labelled leg ([#108](https://github.com/FelipeFuhr/ffreis-workflows-rust/issues/108)) ([302b587](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/302b587898cef60b8ca1e94dbc0968e0c7a3367a))
+
 ## [2.4.0](https://github.com/FelipeFuhr/ffreis-workflows-rust/compare/v2.3.0...v2.4.0) (2026-09-07)
 
 
