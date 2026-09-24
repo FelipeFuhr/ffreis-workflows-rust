@@ -142,6 +142,18 @@ jobs:
       # Public repo: self-hosted structurally unavailable — pin explicitly.
       runner: '["ubuntu-latest"]'
 
+  lock-sync:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/rust-lock-sync.yml
+    with:
+      working-directory: examples/hello
+      # examples/hello commits Cargo.lock (binary-shaped fixture), so this
+      # exercises the real `cargo metadata --locked` path, not the
+      # no-Cargo.lock skip branch.
+      # Public repo: self-hosted structurally unavailable — pin explicitly.
+      runner: '["ubuntu-latest"]'
+
   coverage:
     permissions:
       contents: read
