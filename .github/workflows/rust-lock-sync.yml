@@ -1,0 +1,87 @@
+name: Rust Lock Sync (Cargo.lock)
+
+# NOTE: library crates in the fleet gitignore Cargo.lock (only binaries/
+# Lambdas commit it, per this repo's own --locked convention — see
+# .claude/rules/non-obvious-workflow-rules.md item 10). A caller with no
+# committed Cargo.lock has nothing to check; the job detects that and skips
+# cleanly rather than failing on a file that was never meant to exist.
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: "Directory containing the Cargo workspace"
+        type: string
+        default: "."
+      run_on_draft:
+        description: "Run even on draft PRs (default: skip on draft to save CI minutes)"
+        required: false
+        type: boolean
+        default: false
+      runner:
+        description: |
+          JSON-encoded runner label(s). Default: self-hosted [self-hosted, local]. Pass '["ubuntu-latest"]' for GitHub-hosted.
+        required: false
+        type: string
+        default: '["self-hosted","local"]'
+    secrets:
+      PRIVATE_DEPS_TOKEN:
+        description: "Token with read access to private git-dependency repos (e.g. FLEET_READ_TOKEN). Optional — omit if the workspace has no private cargo git deps."
+        required: false
+
+jobs:
+  lock-sync:
+    if: ${{ inputs.run_on_draft || vars.CI_RUN_ON_DRAFT == 'true' || github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    # PUBLIC repos are FORCED onto GitHub-hosted runners, overriding `runner`.
+    # A public repo accepts fork pull requests, and a self-hosted runner
+    # executing fork-authored code would run arbitrary code on the homelab
+    # cluster. This is the one case where honouring the caller's input would be
+    # wrong. Private repos keep whatever `runner` says (default: self-hosted).
+    runs-on: ${{ github.event.repository.visibility == 'public' && fromJson('["ubuntu-latest"]') || fromJson(inputs.runner) }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+
+    env:
+      # See rust-deny.yml for the full explanation: rustup replacing a baked
+      # toolchain component hits overlayfs EXDEV on a fresh pod. Point
+      # RUSTUP_HOME off the image's lower layer so install is fresh, not a
+      # replace.
+      RUSTUP_HOME: /home/runner/_work/_temp/rustup-ci
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Configure git for private cargo dependencies
+        env:
+          PRIVATE_DEPS_TOKEN: ${{ secrets.PRIVATE_DEPS_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$PRIVATE_DEPS_TOKEN" ]]; then
+            git config --global url."https://x-access-token:${PRIVATE_DEPS_TOKEN}@github.com/".insteadOf "https://github.com/"
+            # cargo's libgit2 backend does not reliably honor url.insteadOf
+            # credential rewriting; force it to shell out to system git,
+            # which does.
+            echo "CARGO_NET_GIT_FETCH_WITH_CLI=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install Rust (minimal profile)
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: stable
+
+      - name: Assert Cargo.lock is not stale
+        run: |
+          set -euo pipefail
+          if [ ! -f Cargo.lock ]; then
+            echo "No committed Cargo.lock in this workspace — nothing to check (library-crate convention)."
+            exit 0
+          fi
+          # --locked resolves the dependency graph and fails loudly if
+          # Cargo.lock would need to change to satisfy Cargo.toml, without
+          # compiling anything (cargo metadata never invokes rustc).
+          cargo metadata --locked --all-features --format-version 1 >/dev/null

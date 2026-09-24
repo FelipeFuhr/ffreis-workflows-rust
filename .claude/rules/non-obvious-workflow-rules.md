@@ -50,7 +50,7 @@ paths:
    `rust-mutation.yml`, `rust-test.yml`, `rust-build.yml` in #54/#56/#57; later
    extended to `rust-bench.yml`, `rust-miri.yml`, `rust-msrv.yml`,
    `rust-proptest.yml`, `rust-quick-checks.yml`, `rust-security.yml`,
-   `rust-integration-coverage.yml`). When set,
+   `rust-integration-coverage.yml`, `rust-lock-sync.yml`). When set,
    a "Configure git for private cargo dependencies" step (right after checkout)
    runs `git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf
    "https://github.com/"` and sets `CARGO_NET_GIT_FETCH_WITH_CLI=true` — required
@@ -141,9 +141,10 @@ paths:
    the cargo verbs each file invokes, not hand-listed.
 
    `rust-fmt.yml`, `rust-deny.yml`, `rust-affected.yml`, `rust-container.yml`,
-   `rust-semgrep.yml`, and `rust-security.yml` are intentionally NOT wired —
-   none compile the caller's workspace (`cargo fmt`/`cargo deny check`/
-   `cargo metadata`/`cargo audit` all work off the manifest or lockfile, and
+   `rust-semgrep.yml`, `rust-security.yml`, and `rust-lock-sync.yml` are
+   intentionally NOT wired — none compile the caller's workspace (`cargo
+   fmt`/`cargo deny check`/`cargo metadata`/`cargo audit` all work off the
+   manifest or lockfile, `cargo metadata --locked` likewise, and
    `rust-security.yml` deliberately uses a prebuilt cargo-audit binary rather
    than `cargo install`).
 
@@ -304,3 +305,17 @@ paths:
     workflow — matrix axes nested, directly-consumed inputs flat — so neither
     a new matrix-axis workflow nor an over-eager sweep can reintroduce either
     half. Do not "fix" a `runner:` input by nesting it.
+
+16. **`rust-lock-sync.yml` (added for a fleet consumer that has a real
+    `Cargo.lock`, mirroring `ffreis-workflows-python`'s `python-lock-sync.yml`
+    — no equivalent existed for Cargo before this).** Uses `cargo metadata
+    --locked --all-features --format-version 1` as the check: `--locked`
+    makes cargo fail rather than silently re-resolve if `Cargo.lock` would
+    need to change to satisfy `Cargo.toml`, and `cargo metadata` never
+    invokes rustc, so this is a manifest/lockfile-only check like
+    `rust-deny.yml`, not a build. **Skips cleanly (exit 0, not a failure)
+    when no `Cargo.lock` is checked in** — per item 10, library crates in the
+    fleet gitignore it, and a caller with nothing committed has nothing to
+    check; do not make this an error. `examples/hello` commits `Cargo.lock`
+    (binary-shaped fixture) specifically so `self-test.yml`'s `lock-sync` job
+    exercises the real check path, not just the skip branch.
