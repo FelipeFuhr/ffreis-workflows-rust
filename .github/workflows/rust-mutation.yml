@@ -707,6 +707,28 @@ jobs:
             exit 1
           fi
 
+          # One more shape the two checks above cannot see, because it leaves
+          # the SAME evidence a healthy "nothing to mutate" run leaves: when the
+          # UNMUTATED BASELINE fails, cargo-mutants writes mutants.out/ with all
+          # four outcome files present and EMPTY, generates no mutants, and
+          # exits 4. Exit 4 is cargo-mutants' generic harness-error code (its
+          # own comment above says "4 = error"), and every cause of it shares
+          # the property that matters here: nothing was measured, so there is
+          # no score to report. Failing on it is correct whatever produced it. The directory exists, so the check above passes it; the
+          # files exist, so have_outcomes below passes it; and the aggregate
+          # step then sees total=0 and reports `score=100`.
+          #
+          # Measured, not hypothetical: ffreis-flowgraph-engine's gate reported
+          # success while testing ZERO mutants from B3 until 2026-09-28, because
+          # four of its tests read the repository's own directory and
+          # cargo-mutants copies the tree WITHOUT .git. Note that the repo's own
+          # "Baseline test run" step cannot catch this either — it runs in the
+          # checkout, where .git is present and the tests pass.
+          if [[ "${MUTANTS_RC:-}" == "4" ]]; then
+            echo "::error title=Mutation harness error::cargo-mutants exited 4 on shard ${{ matrix.shard }} — a harness error, so NO mutants were generated and nothing was measured. mutants.out/ and its four outcome files exist but are empty, which is why this is not caught as missing evidence above. The measured cause of this is a failing UNMUTATED BASELINE: check mutants.out/outcomes.json for a Baseline outcome whose summary is Failure, and fix those tests in a copy of the tree WITHOUT .git — that is what cargo-mutants tests."
+            exit 1
+          fi
+
           have_outcomes=0
           for f in caught.txt missed.txt unviable.txt timeout.txt; do
             if [[ -f "mutants.out/${f}" ]]; then
