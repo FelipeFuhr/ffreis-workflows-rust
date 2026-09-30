@@ -10,43 +10,57 @@ name: Rust Mutation Testing
 #   - exit 0  → mutation score ≥ threshold   (pass)
 #   - exit 1  → mutation score  < threshold  (fail CI)
 #
-# Job topology (sharding, added 2026-08-23): `mutation` is a matrix over
-# `shard-count` shards (default 4 — see that input for the evidence). Each
-# shard independently discovers the same mutant set (`cargo mutants --shard
-# k/n`) and uploads its own outcome files as artifact
-# `mutants-report-shard-<k>`. A separate `mutation-aggregate` job downloads
-# every shard's artifact, sums caught/missed/timeout/unviable across ALL of
-# them, and enforces `threshold` exactly ONCE against the combined total —
-# never per shard, so a shard boundary can never let a below-threshold crate
-# through and can never fail a shard for mutants that live entirely in a
-# different shard. `outputs.mutation-score` is sourced from that aggregate
-# job, not from any individual shard.
+# Job topology (sharding, added 2026-08-23; `mutation-warm` added later — see
+# that job's own comment below): `mutation` is a matrix over `shard-count`
+# shards (default 4 — see that input for the evidence). Each shard
+# independently discovers the same mutant set (`cargo mutants --shard k/n`)
+# and uploads its own outcome files as artifact `mutants-report-shard-<k>`. A
+# separate `mutation-aggregate` job downloads every shard's artifact, sums
+# caught/missed/timeout/unviable across ALL of them, and enforces
+# `threshold` exactly ONCE against the combined total — never per shard, so
+# a shard boundary can never let a below-threshold crate through and can
+# never fail a shard for mutants that live entirely in a different shard.
+# `outputs.mutation-score` is sourced from that aggregate job, not from any
+# individual shard.
 #
-# IMPORTANT — what sharding is (and is not) fixing here. This fleet's
-# self-hosted "heavy" runner class — where this job runs by default, see the
-# `runner` input — is capped at max_replicas: 1
-# (platform/ffreis-home-infra ansible role job_arbiter, `ci-build` class;
-# a second replica was tried and left Pending/unschedulable against measured
-# free node memory, the same trap the xl-tier mistake documented on `runner`
-# fell into). That means shards do NOT run in parallel on this fleet — they
-# queue on, and run one at a time on, the single heavy pod. So sharding here
-# is a JOB-SIZE fix only: it guarantees no single job can run past
-# `timeout-minutes` or get silently killed mid-run by job-arbiter's 90-min
-# stale-job reaper. It is NOT a wall-clock fix — splitting one crate's
-# mutation run N ways costs roughly N× the fixed per-shard overhead
-# (checkout, toolchain install, baseline test run) for zero parallelism
-# benefit under today's capacity, and can make the total gate SLOWER.
-# The lever that actually reduces wall-clock (scoping the WORK, not just
-# redistributing it across more same-size jobs) is the `in-diff` input,
-# below — prefer that for PR-triggered runs; reserve a wide shard-count for
-# the full/scheduled sweep that recovers whole-crate coverage.
+# IMPORTANT — what sharding is (and is not) fixing here, and CORRECTED here
+# from an earlier version of this comment that asserted max_replicas: 1 and
+# reasoned entirely from that. This fleet's self-hosted "heavy" runner class
+# — where this job runs by default, see the `runner` input — is capped at
+# max_replicas: 3, not 1 (platform/ffreis-home-infra ansible role
+# job_arbiter, `ci-build` class, defaults/main.yml). That cap moved twice,
+# and the file's own comments there say why: 1 -> 2 on 2026-09-08 ("`max_replicas: 1`
+# made this tier a SINGLE POINT OF STARVATION" — an ephemeral runner's
+# exit-0-then-backoff cycle left zero heavy runners registered for windows
+# of up to ~5 minutes, observed live with `gha-runner-heavy 0/1 1 0` while
+# `gha-runner-light` sat healthy at `3/3`), then 2 -> 3 on 2026-09-23
+# ("RAISED 2 -> 3 ... ffreis-rust-shared run 35908552119 ran four mutation
+# shards STRICTLY SERIALLY — each starting within two seconds of the
+# previous one finishing, 3.5 hours end to end, last shard cancelled
+# unfinished. A cap of 2 was not the whole reason ..., but it is the ceiling
+# that would have bound next."). Two shards were observed running
+# CONCURRENTLY on run 36678132846.
 #
-# `mutants-fail-fast` (added after 2026-08-29, still unreleased as of this
-# comment): strategy.fail-fast for the shard matrix, default false. On a
-# capacity-constrained pool like this fleet's serial "heavy" tier above, a
-# genuine infra fault in one shard otherwise still burns the remaining
-# shards' full serial wall-clock before mutation-aggregate fails anyway —
-# see that input's own description for when to flip it to true.
+# So sharding now buys REAL parallelism, up to 3 concurrent shards, not only
+# the job-size bound the earlier version of this comment claimed. It is
+# still bounded, not unlimited: with the `shard-count` default of 4 below,
+# 3 shards run at once and the 4th queues behind them rather than all 4
+# serializing — see that input's own description for why 4 is kept rather
+# than lowered to 3 now that the cap matches. `timeout-minutes` and
+# job-arbiter's 90-min stale-job reaper still bound any single shard's own
+# runtime regardless of how many run concurrently. It is also still not a
+# full wall-clock fix on its own — splitting one crate's mutation run N ways
+# still costs roughly N× the fixed per-shard overhead (checkout, toolchain
+# install, baseline test run), now largely paid CONCURRENTLY rather than
+# serially, but not eliminated. The lever that actually reduces the WORK
+# (not just how many jobs it's spread across) is the `in-diff` input, below
+# — prefer that for PR-triggered runs; reserve a wide shard-count for the
+# full/scheduled sweep that recovers whole-crate coverage.
+#
+# `mutants-fail-fast` (added after 2026-08-29): strategy.fail-fast for the
+# shard matrix, default false — see that input's own description, corrected
+# alongside this comment, for what fail-fast still buys and does not under
+# max_replicas: 3.
 
 on:
   workflow_call:
@@ -226,20 +240,24 @@ on:
           minutes — landing comfortably under 60 min per shard with real
           margin for a bigger or slower crate than the one measured.
 
-          Deliberately NOT higher. cargo-mutants' own docs suggest 8-32
-          shards as a starting point, but that assumes real parallel runner
-          capacity. This fleet's self-hosted "heavy" class is capped at
-          max_replicas: 1 (see the job-topology note at the top of this
-          file) — shards queue and run SERIALLY on the one pod, so every
-          extra shard adds another full round of fixed overhead (checkout,
-          toolchain install, baseline test run) to the total wall-clock for
-          the whole gate, for zero parallelism benefit today. 4 is the
-          smallest shard count that comfortably clears the worst crate
-          measured so far; raising the default further would trade more
-          overhead for headroom this fleet currently has no spare runner
-          capacity to spend faster. (Raising `ci-build`'s max_replicas would
-          change that trade — that is a live-cluster capacity decision, out
-          of scope for this file.)
+          Deliberately NOT higher, and KEPT AT 4 (not lowered to 3) now that
+          `ci-build`'s max_replicas actually IS 3 — see the job-topology
+          note at the top of this file for the correction and its evidence.
+          cargo-mutants' own docs suggest 8-32 shards as a starting point,
+          but that assumes real parallel runner capacity well beyond what
+          this fleet has. At max_replicas: 3, 4 shards run as 3 concurrent
+          plus one queued behind them, not 4 fully serial — so the "extra
+          shard adds another full round of fixed overhead for zero
+          parallelism benefit" reasoning this paragraph used to state no
+          longer holds AT ALL for the first 3; it still holds for the 4th,
+          which is exactly why 4 (one deliberate unit of headroom over the
+          replica cap) rather than exactly 3 (which would leave no slack for
+          a crate bigger than the one measured, or for a second mutation run
+          landing on the same tier at once) or something higher (which would
+          queue two or more shards, paying their full fixed overhead
+          serially with no offsetting benefit). Raising `ci-build`'s
+          max_replicas further would change this trade again — a
+          live-cluster capacity decision, out of scope for this file.
 
           Override UP for a crate known to be bigger than 987 mutants.
           Override DOWN to 1 for small/typical crates (most of the fleet) —
@@ -267,18 +285,110 @@ on:
 
           Consider true for a caller whose runner pool is capacity-
           constrained enough that shards effectively queue and run
-          SERIALLY rather than in parallel (see the job-topology note at
-          the top of this file — this fleet's own "heavy" tier is exactly
-          this case, capped at max_replicas: 1). There, a genuine infra
-          fault in shard 0 wastes real serial wall-clock finishing shards
-          1..N-1 before mutation-aggregate fails anyway on "at least one
-          shard did not succeed" — cancelling the rest early via
-          fail-fast: true recovers that time. Less useful on a pool with
-          real parallel capacity, where the other shards finish at roughly
-          the same time regardless of whether one was cancelled.
+          SERIALLY rather than in parallel. CORRECTED: this fleet's own
+          "heavy" tier is no longer that case — see the job-topology note at
+          the top of this file — `ci-build`'s max_replicas is 3, not 1, so
+          with the `shard-count` default of 4 the first 3 shards run
+          concurrently and only the 4th queues behind them. A genuine infra
+          fault in one of the 3 concurrent shards no longer wastes N-1 full
+          serial rounds; it wastes only that shard's own partial run plus
+          (if fail-fast cancels the still-queued 4th before it starts) that
+          4th shard's wait. Still a real saving, just a smaller one than a
+          fully-serial pool would see — which is why this default stays
+          false rather than flipping to true here: the common-path cost of
+          false (mutation-aggregate waiting for shards that were going to
+          finish at roughly the same time anyway) is now small on this
+          fleet, and false keeps the "always see every shard's data" benefit
+          above unconditionally. Still worth true for a caller on a pool
+          that genuinely serializes (max_replicas: 1, or a fleet with no
+          spare heavy capacity at all).
         required: false
         type: boolean
         default: false
+      mutants-timeout:
+        description: >-
+          Seconds passed to cargo-mutants' `--timeout` whenever this run
+          also passes `--baseline skip` (shard-count > 1 — see `Run mutation
+          testing` below). This makes today's IMPLICIT behavior explicit; it
+          is not a change to it. Per https://mutants.rs/timeouts.html, the
+          multiplier-based auto-timeout "cannot be used when the baseline is
+          skipped. If no explicit timeout is provided in these cases, then
+          there is no build timeout and the test timeout default of 300
+          seconds will be used" — cargo-mutants itself warns about exactly
+          this combination, reproduced verbatim against this fleet's
+          cargo-mutants (27.1.0) by running `--baseline skip` with no
+          `--timeout`:
+            WARN An explicit test timeout is recommended when using
+            --baseline=skip; using 300 seconds by default
+          Upstream's own examples/workflows/sharded.yml passes `--timeout
+          300` for the same reason. Default 300 here matches that implicit
+          fallback exactly, so no existing caller's behavior changes.
+
+          Lower it for a fast suite: measured on a private consumer crate's
+          diagnosed shard (a 285-crate workspace pulling four AWS SDK
+          crates, aws-lc-sys, ring and tree-sitter), a mutant cost roughly
+          4-5s to build and ~0s to test, so 300s is generous headroom there,
+          not a tight bound — a caller whose own suite is that fast can cut
+          this substantially and fail faster on a genuinely hung mutant.
+
+          Ignored (not passed) when shard-count is 1 — an unsharded run
+          keeps cargo-mutants' own default `--baseline run` and its own
+          multiplier-based timeout, neither of which this input touches.
+          Also ignored, with a `::notice`, when the caller already passes
+          `--timeout` or `-t` via `mutants-args`: a duplicated flag is a
+          caller-visible cargo-mutants argument error, and at least one
+          consumer already passes `--timeout` through `mutants-args` today.
+        required: false
+        type: number
+        default: 300
+      mutants-sharding:
+        description: >-
+          Sharding method passed to cargo-mutants' `--sharding` whenever
+          this run also passes `--shard` with more than one shard
+          (shard-count > 1). Default "round-robin".
+
+          THIS IS A BEHAVIOR CHANGE for existing callers that do not
+          override it, stated plainly rather than buried: cargo-mutants
+          defaulted its OWN internal sharding to "slice" in 26.0.0 (assign
+          the first n/k mutants to shard 0, the next n/k to shard 1, ...).
+          Upstream's src/shard.rs doc says slice "may also lead to more
+          unbalanced shards" while round-robin (assign mutant i to shard i %
+          k) "distributes mutants more evenly and will likely generate more
+          equal completion times." Verified against a private consumer crate
+          (the same 285-crate workspace `mutants-timeout` above cites): under
+          slice, one shard held 69 of its 77 mutants in a single source file
+          while a different shard drew zero mutants from an entire module;
+          under round-robin all four shards drew near-identical module
+          mixes. Round-robin also bounds the damage of a dead shard (see the
+          job-topology note at the top of this file for why a shard can die
+          mid-run under memory pressure): losing one shard under slice can
+          erase an entire module's worth of mutants from the aggregate
+          score, where round-robin spreads that same shard's mutants across
+          every module instead, so the aggregate loses a slice of coverage
+          from everywhere rather than all of it from one place.
+
+          AVAILABILITY, CHECKED, NOT ASSUMED: `--sharding` was added in
+          cargo-mutants 26.0.0 and is declared `requires = "shard"` (verified
+          against the 27.1.0 binary installed by this workflow today — help
+          text confirms `--sharding <SHARDING>` and confirms `--shard` is a
+          required companion). This workflow installs cargo-mutants via
+          taiki-e/install-action with no version pin, so an older resolve
+          remains possible for a future run; the `Run mutation testing` step
+          below probes the installed binary's own `--help` output for
+          `--sharding` before passing it, and just leaves that install's own
+          default in place (with a `::notice`) rather than hard-failing the
+          job when the flag is absent.
+
+          Ignored (not passed) when shard-count is 1 — no `--shard` is
+          passed in that case, so `--sharding` would have nothing to modify.
+          Also ignored, with a `::notice`, when the caller already passes
+          `--sharding` via `mutants-args` — mixing sharding methods across
+          shards of one run would be meaningless anyway, since every shard
+          of a given run gets the SAME value: it comes from this one input,
+          not from anything that varies per shard.
+        required: false
+        type: string
+        default: round-robin
     outputs:
       mutation-score:
         description: 'Achieved mutation score (integer, 0–100), summed across all shards.'
@@ -333,8 +443,168 @@ jobs:
           echo "total=${total}" >> "$GITHUB_OUTPUT"
           echo "Mutation shards: ${total} (${why})"
 
-  mutation:
+  # mutation-warm: builds ONE shared target/ before any shard starts, so no
+  # shard's cargo-mutants scratch tree can ever be built from a cold start.
+  #
+  # WHY, MEASURED — not argued. Same shard, same cgroup mirroring the heavy
+  # pod exactly (MemoryMax=3G, swap off, CPUQuota=175%, CARGO_BUILD_JOBS=1,
+  # CARGO_PROFILE_DEV_DEBUG=0), run twice:
+  #
+  #   cargo-mutants scratch tree   peak RSS     hit the 3Gi ceiling   outcome
+  #   cold (no usable target/)     3221225472   2474 times            never finishes
+  #   warm (target/ restored)      2014101504   0                     finished in 11m, full score
+  #
+  # (3221225472 bytes is EXACTLY the 3Gi MemoryMax; 2014101504 bytes is
+  # 2.01Gi.) The heavy pod is big enough — what kills a shard is
+  # COLD-BUILDING inside it. cargo-mutants' own `copy_target` (default true)
+  # already copies a restored target/ into its scratch tree when one exists;
+  # the gap was never that cargo-mutants can't use a warm target, it's that
+  # one usually was not there for it to use.
+  #
+  # "USUALLY NOT THERE" WAS A COIN FLIP THIS WORKFLOW BUILT IN. The `Rust
+  # cache` step below used to pass only `workspaces:`, so Swatinem/rust-cache
+  # fell back to its automatic job-based key — keyed on `github.job` (the
+  # static job id "mutation", identical across every matrix leg, NOT the
+  # shard index) — so every shard in a run computed the SAME cache key and
+  # raced to SAVE it. Observed on run 36678132846 shard 0:
+  #   Failed to save: Unable to reserve cache with key
+  #   v0-rust-mutation-Linux-x64-64f0fdd7-8451cd2f, another job may be
+  #   creating this cache
+  # Only whichever shard won that race left a usable target/ behind for the
+  # NEXT run to restore; any of the others could be the one that draws the
+  # mutant that runs the pod out of memory.
+  #
+  # THE FIX: one job builds and saves the shared cache entry ONCE, before the
+  # matrix starts, and every shard only reads it. `mutation` below now
+  # `needs: [shard-plan, mutation-warm]`, and both jobs' `Rust cache` steps
+  # carry the SAME explicit `shared-key` so they target that one entry
+  # deliberately instead of colliding on it by accident. Only THIS job saves
+  # (`save-if: true`, the default — spelled out on this step so the contrast
+  # with the matrix's `save-if: false` below is visible in a diff, not just
+  # implied by omission); every shard is restore-only, which also removes
+  # the "another job may be creating this cache" race entirely — there is
+  # exactly one writer.
+  #
+  # THE TRADE, stated plainly: this spends one whole extra runner job
+  # (checkout + toolchain install + a `cargo test --no-run` build) on every
+  # mutation run, whether or not any shard would have won the old save race
+  # that run. On this fleet's capacity — `ci-build` allows up to 3 concurrent
+  # heavy replicas, see the job-topology note at the top of this file — that
+  # job-size cost is the intended trade for turning a shard's
+  # cold-build-into-OOM path from "sometimes happens" into "cannot happen".
+  #
+  # `needs: [shard-plan, mutation-warm]` on `mutation` below is also the
+  # failure guard, CONFIRMED rather than assumed: a job's `if:` is implicitly
+  # ANDed with success() of everything in its `needs:` UNLESS the expression
+  # itself calls always()/failure()/cancelled() — `mutation`'s `if:` (copied
+  # below) does none of those, so a failed mutation-warm skips the entire
+  # matrix rather than letting it run every shard cold against a cache that
+  # was never populated.
+  mutation-warm:
     needs: shard-plan
+    if: ${{ inputs.run_on_draft || vars.CI_RUN_ON_DRAFT == 'true' || github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    name: Warm the shared mutation build cache
+    # Same expression as `mutation` below, INCLUDING the public-repo
+    # override — this job builds the same crate on the same runner class the
+    # matrix will use, so priming a cache the matrix can't restore from
+    # (wrong OS/arch, wrong label set) would defeat the point.
+    runs-on: ${{ github.event.repository.visibility == 'public' && fromJson('["ubuntu-latest"]') || fromJson(inputs.runner) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    env:
+      # Identical to `mutation`'s own RUSTUP_HOME below — see that job's env
+      # block comment for the full EXDEV/overlayfs derivation. Needed here
+      # too: this job installs the same toolchain the same way.
+      RUSTUP_HOME: /home/runner/_work/_temp/rustup-ci
+      CARGO_PROFILE_DEV_DEBUG: ${{ inputs.cargo-profile-debug }}
+    steps:
+      # Identical to `mutation`'s own "Resolve build parallelism" step below
+      # — see that job's comment for the full derivation. Needed here too:
+      # this job's own `cargo test --no-run` is a real build and must not
+      # over-commit the pod any more than the matrix's builds do.
+      - name: Resolve build parallelism
+        working-directory: ${{ github.workspace }}
+        env:
+          REQUESTED: ${{ inputs.cargo-build-jobs }}
+        run: |
+          set -euo pipefail
+          if [ "${REQUESTED}" != "auto" ]; then
+            echo "CARGO_BUILD_JOBS=${REQUESTED}" >> "$GITHUB_ENV"
+            echo "build parallelism: ${REQUESTED} (explicit caller override)"
+            exit 0
+          fi
+          # The path is a seam so this can be tested against fixtures — the
+          # workspace's "inject IO, never real IO in a tested path" rule.
+          # Production never sets it.
+          limit="$(cat "${CGROUP_MEMORY_MAX_PATH:-/sys/fs/cgroup/memory.max}" 2>/dev/null || echo max)"
+          cpus="$(nproc 2>/dev/null || echo 2)"
+          # "max" means unlimited (hosted runners, or cgroup v1 layouts where
+          # this file is absent). Never guess a big number from an unreadable
+          # limit — fall back to the value this input used to hardcode.
+          if [ "${limit}" = "max" ] || ! printf '%s' "${limit}" | grep -qE '^[0-9]+$'; then
+            jobs=2
+            why="cgroup limit unreadable or unlimited; safe fallback"
+          else
+            gib=$(( limit / 1073741824 ))
+            [ "${gib}" -lt 1 ] && gib=1
+            jobs="${gib}"
+            [ "${jobs}" -gt "${cpus}" ] && jobs="${cpus}"
+            why="${gib}GiB pod memory limit, ${cpus} cpu"
+          fi
+          echo "CARGO_BUILD_JOBS=${jobs}" >> "$GITHUB_ENV"
+          echo "build parallelism: ${jobs} (${why})"
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: ${{ inputs.in-diff && '0' || '1' }}
+
+      - name: Configure git for private cargo dependencies
+        env:
+          PRIVATE_DEPS_TOKEN: ${{ secrets.PRIVATE_DEPS_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$PRIVATE_DEPS_TOKEN" ]]; then
+            git config --global url."https://x-access-token:${PRIVATE_DEPS_TOKEN}@github.com/".insteadOf "https://github.com/"
+            # cargo's libgit2 backend does not reliably honor url.insteadOf
+            # credential rewriting; force it to shell out to system git,
+            # which does.
+            echo "CARGO_NET_GIT_FETCH_WITH_CLI=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install Rust (${{ inputs.toolchain }})
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: ${{ inputs.toolchain }}
+
+      # See the job comment above for the full evidence. shared-key makes
+      # this entry deliberate rather than the accidental collision the
+      # matrix's identical shared-key used to guard against; save-if: true
+      # (the default, spelled out for the contrast) makes this job the
+      # cache's ONE writer.
+      - name: Rust cache
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
+        with:
+          workspaces: "${{ inputs.working-directory }} -> target"
+          shared-key: mutation
+          save-if: true
+
+      # Populates target/ with compiled dependencies AND test binaries —
+      # everything cargo-mutants' `copy_target` needs to skip a cold build —
+      # without actually RUNNING the suite, which each shard's own "Baseline
+      # test run" step below still does (that run is what verifies the
+      # unmutated baseline passes; this one exists purely to leave build
+      # artifacts behind).
+      - name: Prime target/ for the matrix (build only, do not run)
+        run: |
+          set -euo pipefail
+          cargo test --all-features --no-run
+
+  mutation:
+    needs: [shard-plan, mutation-warm]
     if: ${{ inputs.run_on_draft || vars.CI_RUN_ON_DRAFT == 'true' || github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: Mutation score (cargo-mutants)
     strategy:
@@ -484,10 +754,17 @@ jobs:
         with:
           toolchain: ${{ inputs.toolchain }}
 
+      # shared-key + save-if: false: this shard RESTORES the entry
+      # `mutation-warm` built and saved above; it never writes. See that
+      # job's comment for why (the old default job-based key made every
+      # shard compute the SAME key and race to save it — this removes that
+      # race by making mutation-warm the cache's one writer).
       - name: Rust cache
         uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
         with:
           workspaces: "${{ inputs.working-directory }} -> target"
+          shared-key: mutation
+          save-if: false
 
       # Disk-safety net (not a policy gate): mutants-args defaulting to ''
       # mutates the whole workspace, which has filled CI disk before on
@@ -623,10 +900,27 @@ jobs:
           IN_DIFF: ${{ steps.diff.outputs.result == 'ok' && format('{0}/pr.diff', runner.temp) || '' }}
           SHARD_INDEX: ${{ matrix.shard }}
           SHARD_TOTAL: ${{ needs.shard-plan.outputs.total }}
+          MUTANTS_TIMEOUT: ${{ inputs.mutants-timeout }}
+          MUTANTS_SHARDING: ${{ inputs.mutants-sharding }}
         run: |
           set -euo pipefail
 
           read -r -a mutants_args_arr <<< "${MUTANTS_ARGS:-}"
+
+          # Exact-token membership test over mutants_args_arr — a substring
+          # test would false-positive on an unrelated value that merely
+          # CONTAINS e.g. "-t". Used below to defer to a caller who already
+          # passes --timeout/-t or --sharding through mutants-args, per the
+          # `mutants-timeout` / `mutants-sharding` input descriptions.
+          has_mutants_arg() {
+            local flag a
+            for flag in "$@"; do
+              for a in "${mutants_args_arr[@]}"; do
+                [[ "$a" == "$flag" ]] && return 0
+              done
+            done
+            return 1
+          }
 
           in_diff_args=()
           if [[ -n "${IN_DIFF:-}" ]]; then
@@ -652,6 +946,46 @@ jobs:
           baseline_args=()
           if [[ "${SHARD_TOTAL}" -gt 1 ]]; then
             baseline_args=(--baseline skip)
+          fi
+
+          # --timeout whenever --baseline skip is also being passed (see
+          # `baseline_args` above) — cargo-mutants itself warns about this
+          # exact combination ("An explicit test timeout is recommended when
+          # using --baseline=skip; using 300 seconds by default", reproduced
+          # verbatim against cargo-mutants 27.1.0) because, per
+          # https://mutants.rs/timeouts.html, its multiplier-based
+          # auto-timeout "cannot be used when the baseline is skipped". See
+          # the `mutants-timeout` input for the full derivation, including
+          # why 300 is not a behavior change. Deferred to the caller's own
+          # --timeout/-t, if any, rather than doubling the flag.
+          timeout_args=()
+          if [[ "${SHARD_TOTAL}" -gt 1 ]]; then
+            if has_mutants_arg --timeout -t; then
+              echo "::notice title=Mutation timeout::mutants-args already passes --timeout/-t; not adding the mutants-timeout default (${MUTANTS_TIMEOUT}s)."
+            else
+              timeout_args=(--timeout "$MUTANTS_TIMEOUT")
+            fi
+          fi
+
+          # --sharding whenever this run actually shards (SHARD_TOTAL > 1,
+          # so --shard above is non-trivial). See the `mutants-sharding`
+          # input for the full derivation (why round-robin, and why this is
+          # a deliberate behavior change). Two guards, in order: defer to a
+          # caller's own --sharding in mutants-args, same as --timeout
+          # above; and probe the INSTALLED cargo-mutants for the flag before
+          # relying on it, since this workflow installs an unpinned version
+          # and --sharding only exists from 26.0.0 onward — an unsupported
+          # flag must not hard-fail every consumer, so this falls back to
+          # that install's own default instead.
+          sharding_args=()
+          if [[ "${SHARD_TOTAL}" -gt 1 ]]; then
+            if has_mutants_arg --sharding; then
+              echo "::notice title=Mutation sharding::mutants-args already passes --sharding; not adding the mutants-sharding default (${MUTANTS_SHARDING})."
+            elif cargo mutants --help 2>/dev/null | grep -q -- '--sharding'; then
+              sharding_args=(--sharding "$MUTANTS_SHARDING")
+            else
+              echo "::notice title=Mutation sharding::installed cargo-mutants has no --sharding flag (added in 26.0.0); leaving its own default sharding method in place."
+            fi
           fi
 
           # DO NOT pass `--output mutants.out`. cargo-mutants treats --output as
@@ -686,6 +1020,8 @@ jobs:
             --jobs "$MUTATION_JOBS" \
             "${shard_args[@]}" \
             "${baseline_args[@]}" \
+            "${timeout_args[@]}" \
+            "${sharding_args[@]}" \
             "${in_diff_args[@]}" \
             "${mutants_args_arr[@]}" \
             2>&1
