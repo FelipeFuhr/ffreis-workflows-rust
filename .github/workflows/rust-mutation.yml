@@ -514,6 +514,50 @@ on:
         required: false
         type: boolean
         default: false
+      mutants-cache-salt:
+        description: >-
+          Appended to the shared cache key `mutation-warm` and every shard
+          restore from (see the job-topology note at the top of this file).
+          Default "" — the key is exactly "mutation", unchanged from before
+          this input existed, so no existing caller's behavior changes.
+
+          THE RECOVERY LEVER for a POISONED cache entry. GitHub Actions
+          cache entries are immutable once created — confirmed against
+          GitHub's own docs (Caching dependencies to speed up workflows):
+          "You cannot change the contents of an existing cache. Instead,
+          you can create a new cache with a new key." If a save ever
+          produces a corrupt archive under this workflow's shared key (one
+          consumer's observed symptom: `tar` exit code 2 extracting it —
+          see the `Verify the cache restore actually worked` step below for
+          how that is now detected), that key is wedged for the entire
+          remaining lifetime of its lockfile+toolchain combination: every
+          future run restores the same broken archive, every future save
+          is rejected because the key already exists ("Unable to reserve
+          cache with key ..., another job may be creating this cache"), and
+          `mutation-warm` degrades permanently into paying a whole extra
+          runner job for zero benefit. There is no in-place repair — the
+          only fix is a NEW key, and this input is how a caller gets one
+          without `gh cache delete` or any new permission: set it to
+          anything that was not the previous value (a date, a counter, the
+          PR number that discovered the corruption) and the very next run
+          computes a fresh, never-before-used key.
+
+          WHY THIS OPTION, not the alternatives considered: deleting and
+          re-saving the poisoned key via the Actions API was rejected
+          because it needs `actions: write`, which this workflow does not
+          have today and callers would have to grant explicitly — a
+          breaking change for a bug-fix release, and worth a major version
+          on its own merits, not bundled here. Rotating the key
+          automatically (e.g. folding in a date) was rejected because it
+          would cost EVERY caller a fresh cold build on a schedule none of
+          them asked for, to solve a problem only some of them will ever
+          hit. A caller-set salt has the smallest blast radius of the
+          three: zero cost and zero behavior change for the other 43
+          consumers who never touch it, and a one-line fix for the one who
+          needs it.
+        required: false
+        type: string
+        default: ""
     outputs:
       mutation-score:
         description: 'Achieved mutation score (integer, 0–100), summed across all shards.'
@@ -625,6 +669,17 @@ jobs:
   # below) does none of those, so a failed mutation-warm skips the entire
   # matrix rather than letting it run every shard cold against a cache that
   # was never populated.
+  #
+  # ONE CACHE FAILURE MODE this job's OWN steps guard against, ADDED LATER:
+  # the cache entry this job writes and every shard reads is immutable once
+  # created (GitHub's own docs: "You cannot change the contents of an
+  # existing cache. Instead, you can create a new cache with a new key") —
+  # if it is ever saved corrupt, restoring it fails FOREVER for that
+  # lockfile+toolchain, silently, because the underlying cache toolkit
+  # treats a failed restore as routine and non-fatal by design. See the
+  # `Check for an existing cache entry (lookup only)` and `Verify the cache
+  # restore actually worked` steps below, and the `mutants-cache-salt`
+  # input, for detection and recovery.
   mutation-warm:
     needs: shard-plan
     if: ${{ inputs.run_on_draft || vars.CI_RUN_ON_DRAFT == 'true' || github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
@@ -705,17 +760,115 @@ jobs:
         with:
           toolchain: ${{ inputs.toolchain }}
 
+      # A PURE METADATA CHECK, zero download, zero extraction — immune to
+      # the corruption the step below exists to catch, because lookup-only
+      # mode returns before cargo-mutants... before ANY archive is ever
+      # fetched (verified in Swatinem/rust-cache's own restore.ts at the
+      # exact SHA this file pins: `if (lookupOnly) { ...; return
+      # cacheEntry.cacheKey; }` runs before the download/extract call, not
+      # after). Needs no permission beyond what caching already has —
+      # GitHub's cache service authenticates with the runner's own scoped
+      # runtime token, not `GITHUB_TOKEN`/`permissions:`, so this is free.
+      # Exists ONLY so the step below can tell "no cache ever existed"
+      # (ordinary, expected, silent) apart from "a cache exists but would
+      # not restore" (corruption, loud) — `cache-hit` alone cannot do that:
+      # both a genuine miss AND a corrupt-archive restore failure report
+      # `cache-hit: false`, verified against the actual upstream source
+      # this step depends on (actions/toolkit's cache package deliberately
+      # swallows a failed extraction — "warn on cache restore failure and
+      # continue build" / "Suppress all non-validation cache related
+      # errors because caching should be optional" — logs a `::warning`
+      # and returns as if nothing had been found, never fails the step).
+      # save-if: false: a lookup-only check has nothing to save, and must
+      # not register a second writer for this shared key.
+      - name: Check for an existing cache entry (lookup only)
+        id: cache-lookup
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
+        with:
+          workspaces: "${{ inputs.working-directory }} -> target"
+          shared-key: ${{ inputs.mutants-cache-salt != '' && format('mutation-{0}', inputs.mutants-cache-salt) || 'mutation' }}
+          lookup-only: true
+          save-if: false
+
       # See the job comment above for the full evidence. shared-key makes
       # this entry deliberate rather than the accidental collision the
       # matrix's identical shared-key used to guard against; save-if: true
       # (the default, spelled out for the contrast) makes this job the
       # cache's ONE writer.
       - name: Rust cache
+        id: cache-restore
         uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
         with:
           workspaces: "${{ inputs.working-directory }} -> target"
-          shared-key: mutation
+          shared-key: ${{ inputs.mutants-cache-salt != '' && format('mutation-{0}', inputs.mutants-cache-salt) || 'mutation' }}
           save-if: true
+
+      # A POISONED cache entry is otherwise INVISIBLE: GitHub Actions cache
+      # entries are immutable once created (confirmed against GitHub's own
+      # docs — "You cannot change the contents of an existing cache.
+      # Instead, you can create a new cache with a new key" — see the
+      # `mutants-cache-salt` input for the full recovery story), and the
+      # underlying cache toolkit treats a failed restore as routine and
+      # non-fatal (see the lookup step's comment above) — it logs a
+      # `::warning` and moves on, and this job's own downstream build
+      # swallows that the same way: it builds and "succeeds" regardless of
+      # whether the cache helped. Observed in production on a private
+      # consumer: the SAME poisoned key kept getting a `tar` exit-2
+      # extraction failure on every run, forever, because the save that
+      # follows a failed restore is ALSO rejected — "Unable to reserve
+      # cache with key ..., another job may be creating this cache" — the
+      # key already exists, corrupt or not, and immutability means it can
+      # never be overwritten. So mutation-warm silently degraded into
+      # paying a whole extra runner job for nothing, every shard cold-built
+      # anyway, and the run still went green — exactly the "absence of
+      # evidence treated as success" class of bug the `Guard against a
+      # silent harness failure` step below exists to prevent, one layer up.
+      #
+      # DETECTION: compare the lookup-only check above (unaffected by
+      # extraction, so it answers "does an entry for this exact key exist
+      # at all") against this step's own `cache-hit` (answers "did
+      # restoring it actually work"). Lookup found an entry but the real
+      # restore did not -> the entry exists and will not restore, which is
+      # precisely corruption, not an ordinary first-time miss (where the
+      # lookup would ALSO report nothing found).
+      #
+      # FAILS THE JOB, deliberately, not just a louder warning — weighed
+      # both ways, not decided by default:
+      #   - This is real corruption, confirmed above, not a first-time
+      #     miss misdiagnosed as one — a plain "cache-hit: false" check
+      #     would ALSO trip on every brand-new lockfile's first run ever,
+      #     which is normal and must never fail the job; this check does
+      #     not, because it requires the lookup to have found the SAME key.
+      #   - The entire purpose of `mutation-warm` (PR #113) is eliminating
+      #     the cold-build-inside-cargo-mutants'-scratch-tree path that
+      #     OOM-killed a shard's pod. A poisoned key silently puts every
+      #     shard straight back on that path — the exact failure mode this
+      #     file exists to prevent, recurring underneath a job that reports
+      #     success. Stopping loudly HERE, in the cheap lookup+restore
+      #     phase of a single job, costs far less than letting 4 shards
+      #     each cold-build and risk the same OOM this workflow was built
+      #     to stop.
+      #   - The fix is one line for the caller (`mutants-cache-salt`, see
+      #     that input), not a dead end — this is not a hard stop with
+      #     nowhere to go.
+      - name: Verify the cache restore actually worked
+        env:
+          LOOKUP_HIT: ${{ steps.cache-lookup.outputs.cache-hit }}
+          RESTORE_HIT: ${{ steps.cache-restore.outputs.cache-hit }}
+          CACHE_KEY: ${{ inputs.mutants-cache-salt != '' && format('mutation-{0}', inputs.mutants-cache-salt) || 'mutation' }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${LOOKUP_HIT}" == "true" && "${RESTORE_HIT}" != "true" ]]; then
+            echo "::error title=Poisoned mutation cache::a cache entry for shared-key '${CACHE_KEY}' exists (confirmed by an independent lookup-only check) but failed to restore — this is cache CORRUPTION, not a first-time miss. Every shard will cold-build against an empty target/, the same cold-build-into-OOM path mutation-warm exists to eliminate, and because cache entries are immutable this key can never self-heal: every future run will hit the same failure. Set the 'mutants-cache-salt' input to any new value (a date, a counter) to move to a fresh key and recover."
+            exit 1
+          fi
+
+          if [[ "${RESTORE_HIT}" == "true" ]]; then
+            echo "Cache restore OK (shared-key '${CACHE_KEY}')."
+          else
+            echo "No existing cache entry for shared-key '${CACHE_KEY}' — ordinary first build for this lockfile/toolchain, not an error."
+          fi
 
       # Populates target/ with compiled dependencies AND test binaries —
       # everything cargo-mutants' `copy_target` needs to skip a cold build —
@@ -962,12 +1115,17 @@ jobs:
       # `mutation-warm` built and saved above; it never writes. See that
       # job's comment for why (the old default job-based key made every
       # shard compute the SAME key and race to save it — this removes that
-      # race by making mutation-warm the cache's one writer).
+      # race by making mutation-warm the cache's one writer). The
+      # shared-key expression MUST match mutation-warm's own exactly — see
+      # the `mutants-cache-salt` input — or a caller who bumps the salt to
+      # recover from a poisoned cache would have shards quietly restoring
+      # the OLD (possibly still-poisoned) key while mutation-warm writes a
+      # fresh one under the new key, defeating the recovery.
       - name: Rust cache
         uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
         with:
           workspaces: "${{ inputs.working-directory }} -> target"
-          shared-key: mutation
+          shared-key: ${{ inputs.mutants-cache-salt != '' && format('mutation-{0}', inputs.mutants-cache-salt) || 'mutation' }}
           save-if: false
 
       # Disk-safety net (not a policy gate): mutants-args defaulting to ''
