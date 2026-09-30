@@ -81,10 +81,40 @@ on:
         type: number
         default: 60
       jobs:
-        description: 'Parallel mutant workers (each worker builds + tests one mutant)'
+        description: >-
+          Parallel mutant workers (each worker builds AND tests one mutant, so
+          one worker costs a FULL crate build).
+
+          0 (the default) means DERIVE IT from the pod's real memory budget via
+          the ci-budget action, using `mutant-worker-mib` as the per-worker
+          cost. Any positive number is an explicit caller override and is used
+          verbatim.
+
+          The old default was 4, a constant. That is the input that has
+          OOM-killed this job across the fleet, because the number that fits is
+          a property of the crate's DEPENDENCY CLOSURE and the pod's limit, not
+          something a caller can know when scaffolding. Measured on this fleet:
+          ~2500 MiB peak per worker for an aws-sdk-heavy crate versus ~350 MiB
+          for a pure-logic one — a 7x spread that no single constant covers.
+          Note this is NOT `cargo-build-jobs`: that caps rustc units INSIDE one
+          build, and the two MULTIPLY.
         required: false
         type: number
-        default: 4
+        default: 0
+      mutant-worker-mib:
+        description: >-
+          Measured peak resident memory of ONE mutant worker, in MiB. Only used
+          when `jobs` is 0 (auto).
+
+          Default 2500 comes from a real measurement, not a guess: a
+          cargo-mutants run peaked at 2541 MB anon under a cgroup mirroring the
+          3Gi runner pod exactly, at CARGO_BUILD_JOBS=1 — the same figure the
+          infra role uses to size the runner tiers. Lower it for a crate with a
+          light dependency closure to buy parallelism; a wrong value here is
+          the one input that can still over-commit the pod.
+        required: false
+        type: string
+        default: '2500'
       mutants-args:
         description: >-
           Extra flags passed verbatim to cargo mutants. WARNING: the default
@@ -1168,11 +1198,41 @@ jobs:
             echo "Mutating only lines changed by this PR ($(grep -c '^+++' "$DIFF_PATH") changed .rs file(s))."
           fi
 
+      # ── Resource budget ──────────────────────────────────────────────
+      # The worker count is the single input that has OOM-killed this job
+      # across the fleet, because one worker is a FULL crate build and the
+      # runner agent shares the pod cgroup with it — so when the pod is
+      # over-committed the OOM killer can take the AGENT, and the job dies
+      # mid-step with empty step conclusions and BlobNotFound logs. That reads
+      # as flaky infrastructure rather than "you asked for more memory than
+      # you have", which is why it kept being re-tuned by hand instead of
+      # fixed.
+      #
+      # ci-budget reads the limit from the CGROUP rather than /proc/meminfo —
+      # inside a pod the latter reports the NODE's free memory, which is how a
+      # "memory-aware" cap plans three 2.5 GB workers into a 3 GiB pod. Skipped
+      # entirely when a caller pins `jobs` explicitly; their number wins.
+      - name: Plan mutant workers
+        id: budget
+        if: ${{ inputs.jobs == 0 }}
+        uses: FelipeFuhr/ffreis-workflows-general/.github/actions/ci-budget@67ab77cd9e05184bb7e860e83481a4e339a63a0c # untagged; 2 commits past v2.1.0
+        with:
+          per-worker-mib: ${{ inputs.mutant-worker-mib }}
+
+      # Captured BEFORE the run because light/heavy runners are persistent,
+      # not ephemeral — a previous job's OOM leaves the cgroup counter
+      # non-zero, and only the DELTA across this step pair is ours.
+      - name: Record the OOM baseline
+        id: oom-before
+        uses: FelipeFuhr/ffreis-workflows-general/.github/actions/ci-budget@67ab77cd9e05184bb7e860e83481a4e339a63a0c # untagged; 2 commits past v2.1.0
+        with:
+          mode: report
+
       - name: Run mutation testing
         id: run
         if: ${{ steps.diff.outputs.result != 'empty' }}
         env:
-          MUTATION_JOBS: ${{ inputs.jobs }}
+          MUTATION_JOBS: ${{ inputs.jobs > 0 && inputs.jobs || steps.budget.outputs.workers }}
           MUTANTS_ARGS: ${{ inputs.mutants-args }}
           IN_DIFF: ${{ steps.diff.outputs.result == 'ok' && format('{0}/pr.diff', runner.temp) || '' }}
           SHARD_INDEX: ${{ matrix.shard }}
@@ -1364,6 +1424,25 @@ jobs:
       # against; a per-shard threshold check would be meaningless (a shard
       # could easily hold 0 or 1 mutants) and could wrongly fail a shard for
       # mutants that live entirely in a different shard.
+      # `always()` so this still reports when the run above failed — an OOM is
+      # exactly the case where the run does NOT succeed, and reporting only on
+      # success would lose the one signal worth having. `fail-on-oom` turns the
+      # kernel's oom_kill counter into an attributable step failure, so the
+      # next reader sees "this job exceeded its memory budget" instead of
+      # inferring it from a null step conclusion.
+      #
+      # It runs BEFORE the harness guard deliberately: when both would fire,
+      # "the pod ran out of memory" is the more useful message than "the
+      # harness produced no output", and the second is a consequence of the
+      # first.
+      - name: Report the memory budget outcome
+        if: ${{ always() && steps.diff.outputs.result != 'empty' }}
+        uses: FelipeFuhr/ffreis-workflows-general/.github/actions/ci-budget@67ab77cd9e05184bb7e860e83481a4e339a63a0c # untagged; 2 commits past v2.1.0
+        with:
+          mode: report
+          baseline-oom-kills: ${{ steps.oom-before.outputs.oom-kills }}
+          fail-on-oom: 'true'
+
       - name: Guard against a silent harness failure
         id: guard
         if: ${{ steps.diff.outputs.result != 'empty' }}
