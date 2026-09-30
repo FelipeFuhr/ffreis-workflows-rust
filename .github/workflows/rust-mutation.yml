@@ -389,6 +389,131 @@ on:
         required: false
         type: string
         default: round-robin
+      test-memory-limit-mb:
+        description: >-
+          Bounds the MUTATED TEST BINARY's address space, in MiB, via
+          `CARGO_TARGET_<HOST_TRIPLE>_RUNNER="prlimit --as=<bytes> --"` — set
+          for the `Run mutation testing` step ONLY (not `Baseline test run`,
+          not the `mutation-warm` job). Default 0 = OFF: no existing
+          caller's behavior changes.
+
+          THE FAILURE MODE THIS ADDRESSES: a mutant that makes a test
+          allocate without bound takes the WHOLE POD down, not just that one
+          mutant's run, because the GitHub runner agent shares the pod
+          cgroup with the build and `memory.oom.group` kills the entire
+          cgroup together — confirmed in this fleet's own gha_runner
+          entrypoint comment, which records exactly that: a Gradle job blew
+          the pod memory limit, the kernel OOM-killed the whole pod cgroup
+          INCLUDING the runner agent, and the pod could not self-heal
+          without manual intervention. That is the same "the self-hosted
+          runner lost communication with the server" signature this
+          workflow already documents for a whole-build OOM — but here it can
+          be triggered by ONE bad mutant killing the runner mid-shard, not
+          just a cold build.
+
+          TWO APPROACHES THAT DO NOT WORK HERE, recorded so they are not
+          rediscovered:
+            - A nested cgroup v2 (a child cgroup with a lower memory.max for
+              just the test process): /sys/fs/cgroup is mounted read-only in
+              an unprivileged container, and kubernetes/kubernetes#121190
+              ("Writable cgroup for unprivileged containers") is still open
+              as of 2026-09-30 — this needs `privileged` or `CAP_SYS_ADMIN`,
+              neither of which this fleet grants runner pods.
+            - `choom` / raising oom_score_adj on the test process: raising
+              it is unprivileged and would normally make the kernel prefer
+              killing the runaway build over the runner agent, but this
+              fleet's own gha_runner manifests template records
+              memory.oom.group killing the WHOLE pod cgroup together — so
+              even a correctly-deprioritized build takes the agent down with
+              it, and nothing survives to report which mutant did it.
+
+          WHAT DOES WORK: Cargo's target runner wraps only the TEST BINARY —
+          not cargo, not rustc, not the linker — so a runaway allocation
+          hits RLIMIT_AS, the test process aborts with a non-zero exit, and
+          cargo reports it as a normal test FAILURE, which cargo-mutants
+          then records as CAUGHT instead of the pod dying and the whole
+          shard's result being lost. Verified directly against a throwaway
+          crate: with a 256 MiB RLIMIT_AS, an allocating test aborted
+          (SIGABRT, "memory allocation of ... bytes failed") while a sibling
+          test in the SAME binary still ran and passed first; `cargo test`
+          exited non-zero and reported "test failed" — no pod, no agent,
+          nothing lost except that one binary's own results.
+
+          TWO CAVEATS THAT WILL OTHERWISE BE REDISCOVERED:
+            - RLIMIT_AS bounds ADDRESS SPACE, not resident memory, so this
+              must be set well above real need. Upstream cargo-mutants PR
+              #651 measured a 256 MiB RLIMIT_AS failing a build in 54ms
+              while the same build peaked at 140 MB RESIDENT under a 256 MiB
+              cgroup — address-space reservations (mmap, allocator
+              overcommit) run far ahead of what actually gets touched.
+              Picking too tight a limit fails GOOD mutants, not just
+              runaway ones.
+            - The abort takes down the whole test PROCESS, so the harness
+              prints no summary and every OTHER test in that same binary is
+              lost too — confirmed above (the sibling test ran, but cargo
+              printed no "test result: ..." line at all once the process
+              aborted). Acceptable for mutation testing, where a caught
+              mutant is caught either way; NOT acceptable for a normal test
+              run, which is why this is scoped to the `Run mutation testing`
+              step only and nowhere else in this file.
+
+          THIS WORKFLOW PROBES for `prlimit` (util-linux) before relying on
+          it and emits a `::warning` and skips the guard, rather than
+          failing the job, if it is absent. The host triple is derived at
+          runtime from `rustc -vV`'s `host:` line, uppercased with `-`
+          replaced by `_` — never hardcoded, since this workflow has its own
+          `os-list`/arch story and a hardcoded
+          `x86_64_unknown_linux_gnu` would silently no-op on any other
+          target.
+
+          UPSTREAM IS BUILDING A FIRST-CLASS VERSION OF THIS: `--max-memory`
+          with a cgroup-v2 backend, sourcefrog/cargo-mutants issue #594 and
+          PRs #647-#653, all open and unmerged as of 2026-09-30. This input
+          is a stopgap for this fleet's unprivileged runner pods, to be
+          retired once that lands.
+        required: false
+        type: number
+        default: 0
+      in-place:
+        description: >-
+          Passes cargo-mutants' `--in-place` and OMITS `--jobs`. Default
+          false: no existing caller's behavior changes.
+
+          OMITTING `--jobs` IS MANDATORY, NOT STYLISTIC: verified against
+          cargo-mutants 27.1.0 that `--in-place` is declared `conflicts_with
+          = "jobs"`, and that `cargo mutants --in-place --jobs 1` fails
+          outright:
+            error: the argument '--in-place' cannot be used with '--jobs
+            <JOBS>'
+          This workflow currently always passes `--jobs` (the `jobs` input,
+          default 4), so `--in-place` would be UNUSABLE by any caller today
+          without this input also dropping `--jobs` when it's set.
+
+          `--in-place` removes cargo-mutants' tree COPY entirely and builds
+          directly in the restored checkout — the largest remaining
+          reduction in both disk and build cost available on top of
+          `mutation-warm`'s cache priming above (it doesn't just warm the
+          copy target/ gets copied into, it removes the copy). Upstream's
+          own CI guidance recommends it: https://mutants.rs/ci.html — "Use
+          the `--in-place` option to avoid copying the tree."
+
+          Also disables cargo-mutants' multiplier-based timeouts, for the
+          same reason as `--baseline skip` above — verified against
+          https://mutants.rs/timeouts.html: "The multiplier timeout options
+          cannot be used when the baseline is skipped (--baseline=skip), or
+          when the build is in-place (--in-place). If no explicit timeouts
+          is provided in these cases, then there is no build timeout and the
+          test timeout default of 300 seconds will be used." So
+          `mutants-timeout` is applied whenever `in-place` is true, not only
+          when actually sharded — see `Run mutation testing` below.
+
+          Left false by default and does not change any existing consumer;
+          opt in per caller once that caller's test suite is known safe to
+          run against a live checkout (e.g. no test that assumes a pristine
+          tree or writes into its own source directory).
+        required: false
+        type: boolean
+        default: false
     outputs:
       mutation-score:
         description: 'Achieved mutation score (integer, 0–100), summed across all shards.'
@@ -1054,6 +1179,8 @@ jobs:
           SHARD_TOTAL: ${{ needs.shard-plan.outputs.total }}
           MUTANTS_TIMEOUT: ${{ inputs.mutants-timeout }}
           MUTANTS_SHARDING: ${{ inputs.mutants-sharding }}
+          IN_PLACE: ${{ inputs.in-place }}
+          TEST_MEMORY_LIMIT_MB: ${{ inputs.test-memory-limit-mb }}
         run: |
           set -euo pipefail
 
@@ -1079,6 +1206,20 @@ jobs:
             in_diff_args=(--in-diff "$IN_DIFF")
           fi
 
+          # --in-place / --jobs are MUTUALLY EXCLUSIVE — verified against
+          # cargo-mutants 27.1.0: `--in-place` is declared `conflicts_with =
+          # "jobs"`, and passing both fails outright with "the argument
+          # '--in-place' cannot be used with '--jobs <JOBS>'". So --jobs is
+          # passed UNLESS in-place is on; see the `in-place` input for the
+          # full derivation of why this trade is worth it.
+          jobs_args=()
+          in_place_args=()
+          if [[ "${IN_PLACE}" == "true" ]]; then
+            in_place_args=(--in-place)
+          else
+            jobs_args=(--jobs "$MUTATION_JOBS")
+          fi
+
           # Always passed, even at SHARD_TOTAL=1 ("shard 0 of 1" is a no-op —
           # every mutant belongs to the single shard). One code path for
           # both the sharded and unsharded case.
@@ -1100,18 +1241,23 @@ jobs:
             baseline_args=(--baseline skip)
           fi
 
-          # --timeout whenever --baseline skip is also being passed (see
-          # `baseline_args` above) — cargo-mutants itself warns about this
-          # exact combination ("An explicit test timeout is recommended when
-          # using --baseline=skip; using 300 seconds by default", reproduced
-          # verbatim against cargo-mutants 27.1.0) because, per
-          # https://mutants.rs/timeouts.html, its multiplier-based
-          # auto-timeout "cannot be used when the baseline is skipped". See
-          # the `mutants-timeout` input for the full derivation, including
-          # why 300 is not a behavior change. Deferred to the caller's own
-          # --timeout/-t, if any, rather than doubling the flag.
+          # --timeout whenever --baseline skip OR --in-place is also being
+          # passed (see `baseline_args` and `in_place_args` above) —
+          # cargo-mutants itself warns about --baseline=skip specifically
+          # ("An explicit test timeout is recommended when using
+          # --baseline=skip; using 300 seconds by default", reproduced
+          # verbatim against cargo-mutants 27.1.0), and per
+          # https://mutants.rs/timeouts.html both trigger the same
+          # limitation: "The multiplier timeout options cannot be used when
+          # the baseline is skipped (--baseline=skip), or when the build is
+          # in-place (--in-place). If no explicit timeouts is provided in
+          # these cases, then there is no build timeout and the test timeout
+          # default of 300 seconds will be used." See the `mutants-timeout`
+          # input for the full derivation, including why 300 is not a
+          # behavior change. Deferred to the caller's own --timeout/-t, if
+          # any, rather than doubling the flag.
           timeout_args=()
-          if [[ "${SHARD_TOTAL}" -gt 1 ]]; then
+          if [[ "${SHARD_TOTAL}" -gt 1 || "${IN_PLACE}" == "true" ]]; then
             if has_mutants_arg --timeout -t; then
               echo "::notice title=Mutation timeout::mutants-args already passes --timeout/-t; not adding the mutants-timeout default (${MUTANTS_TIMEOUT}s)."
             else
@@ -1137,6 +1283,34 @@ jobs:
               sharding_args=(--sharding "$MUTANTS_SHARDING")
             else
               echo "::notice title=Mutation sharding::installed cargo-mutants has no --sharding flag (added in 26.0.0); leaving its own default sharding method in place."
+            fi
+          fi
+
+          # Memory guard on the TEST BINARY ONLY (test-memory-limit-mb, off
+          # by default so no existing caller changes behavior). See that
+          # input's own description for why this is the only approach that
+          # survives this fleet's unprivileged runner pods, and what
+          # upstream is building to replace it. Deliberately set by
+          # exporting into THIS step's own shell rather than via
+          # `$GITHUB_ENV` — that would leak it into every later step
+          # (`Guard against a silent harness failure`, `Upload mutants
+          # output`, ...), where it has no business applying.
+          if [[ "${TEST_MEMORY_LIMIT_MB}" -gt 0 ]]; then
+            if command -v prlimit >/dev/null 2>&1; then
+              host_triple="$(rustc -vV | sed -n 's/^host: //p')"
+              if [[ -z "$host_triple" ]]; then
+                echo "::warning title=Mutation memory guard::could not determine the host triple from 'rustc -vV'; skipping test-memory-limit-mb."
+              else
+                # Cargo's own naming convention: uppercase the triple,
+                # replace '-' with '_'. Derived at runtime, never hardcoded —
+                # this workflow has its own os-list/arch story.
+                runner_var="CARGO_TARGET_$(tr '[:lower:]-' '[:upper:]_' <<< "$host_triple")_RUNNER"
+                limit_bytes=$(( TEST_MEMORY_LIMIT_MB * 1024 * 1024 ))
+                export "${runner_var}=prlimit --as=${limit_bytes} --"
+                echo "Memory guard: ${runner_var}=\"prlimit --as=${limit_bytes} --\" (RLIMIT_AS, test binary only, mutation step only)"
+              fi
+            else
+              echo "::warning title=Mutation memory guard::prlimit (util-linux) is not installed on this runner; skipping test-memory-limit-mb rather than failing the job."
             fi
           fi
 
@@ -1169,11 +1343,12 @@ jobs:
           # change was tests/mutation_score.rs.
           set +e
           cargo mutants \
-            --jobs "$MUTATION_JOBS" \
+            "${jobs_args[@]}" \
             "${shard_args[@]}" \
             "${baseline_args[@]}" \
             "${timeout_args[@]}" \
             "${sharding_args[@]}" \
+            "${in_place_args[@]}" \
             "${in_diff_args[@]}" \
             "${mutants_args_arr[@]}" \
             2>&1
