@@ -1,5 +1,17 @@
 # Changelog
 
+## [3.1.0](https://github.com/FelipeFuhr/ffreis-workflows-rust/compare/v3.0.0...v3.1.0) (2026-09-30)
+
+
+### Features
+
+* **mutation:** bound a runaway mutant so the pod survives ([#114](https://github.com/FelipeFuhr/ffreis-workflows-rust/issues/114)) ([6b78dbd](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/6b78dbdbfa1fe4be0d9744e5e805cfc341783f56))
+
+
+### Bug Fixes
+
+* **mutation:** stop shards cold-building, and balance them ([#113](https://github.com/FelipeFuhr/ffreis-workflows-rust/issues/113)) ([ca8ac66](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/ca8ac661ca9f31515fd5e772b57dd2afb453ad4c))
+
 ## [3.0.0](https://github.com/FelipeFuhr/ffreis-workflows-rust/compare/v2.4.0...v3.0.0) (2026-09-30)
 
 
