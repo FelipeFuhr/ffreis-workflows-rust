@@ -319,3 +319,28 @@ paths:
     check; do not make this an error. `examples/hello` commits `Cargo.lock`
     (binary-shaped fixture) specifically so `self-test.yml`'s `lock-sync` job
     exercises the real check path, not just the skip branch.
+
+17. **`rust-mutation.yml`'s `--in-diff` path handling is relative to
+    `working-directory`, and MUST stay that way.** cargo-mutants runs inside
+    `inputs.working-directory` and reads the diff's paths as relative to there.
+    The diff step therefore runs in that same directory and uses
+    `git diff --relative`. Computing it at the repo root instead emits
+    repo-root paths, and for any caller whose Cargo workspace sits in a
+    subdirectory every hunk path then carries a prefix cargo-mutants cannot
+    match — it logs `No mutants to filter`, writes no outcome files, and the
+    scorer hard-fails on a run that measured nothing.
+
+    That is not hypothetical: it silently disabled this gate on EVERY
+    `*-lambdas-rust` repo in the fleet, all of which pass
+    `working-directory: lambdas`. It stayed invisible for as long as the scorer
+    treated "no outcomes" as a clean 100% (see the `--output` note in
+    `rust-mutation.yml`), and surfaced only once that was hardened.
+
+    A guard in the diff step now fails loudly, naming the offending path, if
+    the first diff entry does not resolve relative to the workspace directory.
+    Do not remove it: without it the symptom appears three steps later as an
+    unexplained scorer failure. `self-test.yml` exercises a subdirectory
+    workspace (`examples/hello`) but NOT with `in-diff: true`, which is exactly
+    why this was not caught there — and turning it on in that job would make
+    its threshold check vacuous whenever the PR happens not to touch
+    `examples/hello`, so the guard is the lock, not a self-test.
