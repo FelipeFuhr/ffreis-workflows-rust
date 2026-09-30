@@ -723,10 +723,89 @@ jobs:
       # test run" step below still does (that run is what verifies the
       # unmutated baseline passes; this one exists purely to leave build
       # artifacts behind).
+      #
+      # FEATURE FLAGS MUST MATCH what cargo-mutants itself will build, or
+      # this job silently stops doing anything useful. cargo hashes build
+      # artifacts by feature set, so a target/ built with the WRONG features
+      # satisfies nothing — cargo rebuilds the graph from scratch on restore,
+      # and every shard cold-builds anyway despite a "successful" warm job.
+      # cargo-mutants does NOT default to --all-features: verified against
+      # cargo-mutants 27.1.0's own --help, `--all-features`,
+      # `--no-default-features` and `--features` are all OPT-IN (no
+      # `[default: ...]` on any of them), so its default build is plain
+      # default-feature resolution — identical to a bare `cargo test` with
+      # no flags. A first version of this job hardcoded `--all-features`
+      # unconditionally, which happens to be harmless for a crate with no
+      # `[features]` section (that's every crate this fix was measured
+      # against) but is a silent no-op for any OTHER consumer that declares
+      # features and does not also pass matching flags through
+      # `mutants-args` — caught in review before merge, not by the
+      # measurement above, which is exactly why it would not have shown up
+      # there. Fixed by extracting the SAME feature flags cargo-mutants will
+      # receive out of `mutants-args`, and passing exactly those — nothing
+      # when `mutants-args` carries none of them, matching cargo-mutants'
+      # own default exactly.
       - name: Prime target/ for the matrix (build only, do not run)
+        env:
+          MUTANTS_ARGS: ${{ inputs.mutants-args }}
         run: |
           set -euo pipefail
-          cargo test --all-features --no-run
+
+          read -r -a mutants_args_arr <<< "${MUTANTS_ARGS:-}"
+
+          # Same exact-token pattern as the `mutation` job's "Run mutation
+          # testing" step below — duplicated, not shared, because GitHub
+          # Actions steps do not share shell state even within one job, let
+          # alone across the two jobs (same reason "Resolve build
+          # parallelism" above is a byte-identical copy, not a call to a
+          # shared script).
+          has_mutants_arg() {
+            local flag a
+            for flag in "$@"; do
+              for a in "${mutants_args_arr[@]}"; do
+                [[ "$a" == "$flag" ]] && return 0
+              done
+            done
+            return 1
+          }
+
+          # Companion to has_mutants_arg() for a flag that carries a VALUE
+          # rather than being a bare toggle — `--features` accepts it in
+          # either spelling cargo takes: split ("--features a,b", value is
+          # the NEXT token) or joined ("--features=a,b", value is part of
+          # the SAME token, after the "="). Scans every occurrence and keeps
+          # the LAST one, matching clap's own override-on-repeat behavior
+          # for a single-valued argument; returns failure (nothing printed)
+          # when the flag is absent at all, same contract as
+          # has_mutants_arg().
+          mutants_arg_value() {
+            local flag="$1" i a found=1 value=""
+            for i in "${!mutants_args_arr[@]}"; do
+              a="${mutants_args_arr[$i]}"
+              if [[ "$a" == "$flag" ]]; then
+                value="${mutants_args_arr[$((i + 1))]:-}"
+                found=0
+              elif [[ "$a" == "${flag}="* ]]; then
+                value="${a#"${flag}="}"
+                found=0
+              fi
+            done
+            [[ "$found" -eq 0 ]] || return 1
+            printf '%s' "$value"
+          }
+
+          feature_args=()
+          if has_mutants_arg --all-features; then
+            feature_args+=(--all-features)
+          fi
+          if has_mutants_arg --no-default-features; then
+            feature_args+=(--no-default-features)
+          fi
+          if features_value="$(mutants_arg_value --features)"; then
+            feature_args+=(--features "$features_value")
+          fi
+
+          cargo test "${feature_args[@]}" --no-run
 
   mutation:
     needs: [shard-plan, mutation-warm]
@@ -947,11 +1026,84 @@ jobs:
         with:
           tool: cargo-mutants
 
-      # Establish a baseline — avoids counting slow clean-build time as test time.
+      # Establish a baseline — avoids counting slow clean-build time as test
+      # time, and (per https://mutants.rs/shards.html) satisfies "if running
+      # with --baseline=skip you must independently verify baseline tests
+      # pass before sharding begins", which `Run mutation testing` below
+      # relies on whenever this run is actually sharded.
+      #
+      # FEATURE FLAGS MATCH `mutants-args`, DELIBERATELY, not `--all-features`
+      # (changed alongside `mutation-warm`'s own feature-flag fix above — see
+      # that job's comment for the full derivation of why cargo-mutants does
+      # NOT default to --all-features). Two independent reasons, not just
+      # one:
+      #   - CORRECTNESS: this step exists to prove the UNMUTATED baseline
+      #     passes for the exact configuration cargo-mutants is about to
+      #     mutate. A superset of features is not a strictly stronger
+      #     version of that check — feature-gated code can behave
+      #     differently under a different feature set (a path only reachable
+      #     under one, a conditionally-disabled path under another) — it is
+      #     a check of a DIFFERENT configuration, which can pass while the
+      #     one actually mutated would not, or the reverse. Matching is the
+      #     only way this step verifies what it claims to.
+      #   - COST: this step now runs immediately after `mutation-warm`'s
+      #     restore. If this step's feature set differs from what
+      #     `mutation-warm` primed, cargo does not recognize the restored
+      #     objects as satisfying it (cargo fingerprints build artifacts by
+      #     feature set) and rebuilds a second, unused variant here — on
+      #     EVERY shard, since this step runs once per shard job — before
+      #     `Run mutation testing` below goes back to the ORIGINAL
+      #     (matching) feature set and finds its own cache entry still warm.
+      #     Matching removes that wasted N-shard rebuild entirely.
       - name: Baseline test run
+        env:
+          MUTANTS_ARGS: ${{ inputs.mutants-args }}
         run: |
           set -euo pipefail
-          cargo test --all-features 2>&1 | tail -5
+
+          read -r -a mutants_args_arr <<< "${MUTANTS_ARGS:-}"
+
+          # Same pattern as `mutation-warm`'s own feature-flag extraction
+          # above (duplicated, not shared — see that job's comment for why)
+          # and as `Run mutation testing` below's has_mutants_arg().
+          has_mutants_arg() {
+            local flag a
+            for flag in "$@"; do
+              for a in "${mutants_args_arr[@]}"; do
+                [[ "$a" == "$flag" ]] && return 0
+              done
+            done
+            return 1
+          }
+
+          mutants_arg_value() {
+            local flag="$1" i a found=1 value=""
+            for i in "${!mutants_args_arr[@]}"; do
+              a="${mutants_args_arr[$i]}"
+              if [[ "$a" == "$flag" ]]; then
+                value="${mutants_args_arr[$((i + 1))]:-}"
+                found=0
+              elif [[ "$a" == "${flag}="* ]]; then
+                value="${a#"${flag}="}"
+                found=0
+              fi
+            done
+            [[ "$found" -eq 0 ]] || return 1
+            printf '%s' "$value"
+          }
+
+          feature_args=()
+          if has_mutants_arg --all-features; then
+            feature_args+=(--all-features)
+          fi
+          if has_mutants_arg --no-default-features; then
+            feature_args+=(--no-default-features)
+          fi
+          if features_value="$(mutants_arg_value --features)"; then
+            feature_args+=(--features "$features_value")
+          fi
+
+          cargo test "${feature_args[@]}" 2>&1 | tail -5
 
       # cargo-mutants requires the diff to apply cleanly to the CURRENT tree —
       # it aborts with "Diff content doesn't match source file" otherwise. So:
