@@ -558,6 +558,19 @@ jobs:
       - name: Compute PR diff for --in-diff
         id: diff
         if: ${{ inputs.in-diff && github.event_name == 'pull_request' }}
+        # working-directory + `git diff --relative` is load-bearing, not tidying.
+        # cargo-mutants runs INSIDE inputs.working-directory and reads the diff's
+        # paths as relative to there. Computing the diff at the repo root emits
+        # repo-root paths, so for any caller whose Cargo workspace is in a
+        # subdirectory every hunk path carries a prefix cargo-mutants cannot
+        # match: it reports "No mutants to filter", writes no outcome files, and
+        # the scorer below correctly hard-fails on a run that measured nothing.
+        # That silently disabled this gate on EVERY *-lambdas-rust repo in the
+        # fleet (all of them pass `working-directory: lambdas`); it surfaced only
+        # once the scorer stopped treating "no outcomes" as a clean 100%.
+        # `--relative` also scopes the diff to that directory, which is correct:
+        # a change outside the workspace has no mutants in it.
+        working-directory: ${{ inputs.working-directory }}
         env:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
           DIFF_PATH: ${{ runner.temp }}/pr.diff
@@ -576,11 +589,26 @@ jobs:
             exit 1
           fi
 
-          git diff "${base}...HEAD" -- '*.rs' > "$DIFF_PATH"
+          git diff --relative "${base}...HEAD" -- '*.rs' > "$DIFF_PATH"
+
+          # Guard the invariant this step exists to satisfy: every path in the
+          # diff must resolve RELATIVE TO the workspace directory, because that
+          # is how cargo-mutants reads them. If the first one does not, the diff
+          # was computed against the wrong base directory and `--in-diff` would
+          # match nothing — producing zero mutants, zero outcome files and a
+          # scorer hard-fail whose message points nowhere near the cause. Fail
+          # here instead, naming the path, so the next person gets one line
+          # instead of an afternoon. (`+++ /dev/null` for deletions is skipped
+          # by the `b/` anchor.)
+          first_path="$(grep -m1 '^+++ b/' "$DIFF_PATH" | sed 's|^+++ b/||' || true)"
+          if [[ -n "$first_path" && ! -e "$first_path" ]]; then
+            echo "::error title=Mutation diff error::diff paths are not relative to working-directory '${{ inputs.working-directory }}' (first entry: '${first_path}'). cargo-mutants would match nothing and report 'No mutants to filter'."
+            exit 1
+          fi
 
           if [[ ! -s "$DIFF_PATH" ]]; then
             echo "result=empty" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Mutation skipped::This PR changes no Rust source, so there is nothing to mutate."
+            echo "::notice title=Mutation skipped::This PR changes no Rust source under '${{ inputs.working-directory }}', so there is nothing to mutate."
           else
             echo "result=ok" >> "$GITHUB_OUTPUT"
             echo "Mutating only lines changed by this PR ($(grep -c '^+++' "$DIFF_PATH") changed .rs file(s))."
