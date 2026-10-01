@@ -6,7 +6,7 @@
 # `*` crosses `/`. Comments and blank lines are ignored.
 #
 # A committed allowlist REPLACES the baseline, it does not extend it. That is
-# why this file suppresses src/lib.rs's four violations yet leaves
+# why this file suppresses src/lib.rs's five violations yet leaves
 # src/adapters/system_clock.rs — baseline-allowlisted, not listed here —
 # counted. `tests/clock_lint.bats` asserts exactly that: 1 violation, not 0.
 # A repo adopting an allowlist must therefore carry its adapter paths over.

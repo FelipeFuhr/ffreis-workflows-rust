@@ -10,7 +10,7 @@
 // nothing to compile, and `make lint`/`make fmt-check` (which loop over
 // `examples/*/`) stay away from it.
 //
-// Expected findings in this file: 4 (lines marked VIOLATION below).
+// Expected findings in this file: 5 (lines marked VIOLATION below).
 // Expected findings in src/adapters/system_clock.rs: 0 (allowlisted path).
 
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -42,6 +42,15 @@ pub fn stamp() -> String {
 /// "skip lines starting with an asterisk" comment filter would swallow.
 pub fn reset(slot: &mut Instant) {
     *slot = Instant::now();
+}
+
+/// VIOLATION 5 — `Local::now()`, proven to actually fire. The other three
+/// forbidden spellings above already have a positive case; this one
+/// previously had only negative cases below (a comment mention and the
+/// allow-listed escape hatch), so the suite never proved the spelling itself
+/// is caught.
+pub fn local_stamp() -> String {
+    format!("{:?}", chrono::Local::now())
 }
 
 // A mention of SystemTime::now() inside a comment is documentation, not a

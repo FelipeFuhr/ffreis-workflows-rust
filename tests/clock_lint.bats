@@ -62,7 +62,7 @@ output_value() {
 @test "non-blocking: finds the fixture's violations and still exits 0" {
   run scan "$FIXTURE" false
   [ "$status" -eq 0 ]
-  [ "$(output_value violations)" -eq 4 ]
+  [ "$(output_value violations)" -eq 5 ]
   echo "$output" | grep -q 'clock-lint: WARN'
   echo "$output" | grep -q '::warning file='
 }
@@ -70,7 +70,7 @@ output_value() {
 @test "blocking: the SAME violations exit nonzero (the gate can fail)" {
   run scan "$FIXTURE" true
   [ "$status" -eq 1 ]
-  [ "$(output_value violations)" -eq 4 ]
+  [ "$(output_value violations)" -eq 5 ]
   echo "$output" | grep -q 'clock-lint: FAIL'
   echo "$output" | grep -q '::error title=Clock lint FAILED'
   # Blocking runs must annotate at error level, not warning.
@@ -81,20 +81,25 @@ output_value() {
 @test "every forbidden spelling is caught, including a deref assignment" {
   run scan "$FIXTURE" false
   [ "$status" -eq 0 ]
-  # Imported, fully qualified, chrono, and the `*slot = Instant::now();` line
-  # whose leading asterisk a naive comment filter would swallow.
+  # Imported, fully qualified, chrono, the `*slot = Instant::now();` line
+  # whose leading asterisk a naive comment filter would swallow, and a bare
+  # positive `Local::now()` call — previously this spelling only had NEGATIVE
+  # cases below (a comment mention, the allow-listed escape hatch), so it was
+  # never actually proven to fire.
   echo "$output" | grep -q 'line=20,'  # SystemTime::now()
   echo "$output" | grep -q 'line=29,'  # std::time::SystemTime::now()
   echo "$output" | grep -q 'line=38,'  # chrono::Utc::now()
   echo "$output" | grep -q 'line=44,'  # *slot = Instant::now();
+  echo "$output" | grep -q 'line=53,'  # chrono::Local::now()
 }
 
 @test "a mention in a comment is not a violation" {
   run scan "$FIXTURE" false
   [ "$status" -eq 0 ]
-  # Doc comment (18), line comment (47), block comment open (49) and its
-  # ` * ` continuation (50) all name a forbidden call and must be ignored.
-  for line in 18 47 49 50; do
+  # Doc comment (18), line comment (56), block comment open (58) and its
+  # ` * ` continuation (59, naming Local::now()) all name a forbidden call
+  # and must be ignored.
+  for line in 18 56 58 59; do
     ! echo "$output" | grep -q "line=${line},"
   done
 }
@@ -102,8 +107,8 @@ output_value() {
 @test "the clock-lint:allow escape hatch suppresses its own line" {
   run scan "$FIXTURE" false
   [ "$status" -eq 0 ]
-  # Line 55 is `chrono::Local::now()` carrying the marker plus a reason.
-  ! echo "$output" | grep -q 'line=55,'
+  # Line 64 is `chrono::Local::now()` carrying the marker plus a reason.
+  ! echo "$output" | grep -q 'line=64,'
 }
 
 @test "the baseline allowlist spares the adapter path" {

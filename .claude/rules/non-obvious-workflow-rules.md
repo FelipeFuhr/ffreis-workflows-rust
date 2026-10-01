@@ -379,10 +379,13 @@ paths:
     `Scan for direct clock reads` breaks both; the extraction fails loudly
     rather than silently testing nothing.
 
-    `tests/fixtures/clock-violations/` is DELIBERATELY violating: four real
-    reads (imported, fully-qualified, chrono, and a `*slot = Instant::now();`
-    deref whose leading asterisk a naive comment filter swallows), plus a
-    commented mention, a baseline-allowlisted adapter, and a
-    `clock-lint:allow` line — none of which may be counted. Do not "fix" it,
-    for the same reason `examples/partial`'s `shrink_to_fit_len()` stays
-    untested.
+    `tests/fixtures/clock-violations/` is DELIBERATELY violating: five real
+    reads (imported, fully-qualified, chrono's `Utc::now()`, a
+    `*slot = Instant::now();` deref whose leading asterisk a naive comment
+    filter swallows, and a bare `chrono::Local::now()` call — added because
+    `Local::now()` previously had only NEGATIVE fixture cases, a comment
+    mention and a `clock-lint:allow`-suppressed line, so that spelling was
+    never actually proven to fire), plus a commented mention, a
+    baseline-allowlisted adapter, and a `clock-lint:allow` line — none of
+    which may be counted. Do not "fix" it, for the same reason
+    `examples/partial`'s `shrink_to_fit_len()` stays untested.
