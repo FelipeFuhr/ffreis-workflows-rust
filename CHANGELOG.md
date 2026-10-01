@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.2.0](https://github.com/FelipeFuhr/ffreis-workflows-rust/compare/v3.1.0...v3.2.0) (2026-10-01)
+
+
+### Features
+
+* **clock-lint:** non-blocking lint for direct wall-clock reads ([#118](https://github.com/FelipeFuhr/ffreis-workflows-rust/issues/118)) ([77e4b02](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/77e4b02271d7643977e203e54fc3091dc6ae876c))
+
 ## [3.1.0](https://github.com/FelipeFuhr/ffreis-workflows-rust/compare/v3.0.0...v3.1.0) (2026-09-30)
 
 
