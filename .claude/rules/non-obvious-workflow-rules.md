@@ -344,3 +344,48 @@ paths:
     why this was not caught there — and turning it on in that job would make
     its threshold check vacuous whenever the PR happens not to touch
     `examples/hello`, so the guard is the lock, not a self-test.
+
+18. **`rust-clock-lint.yml` ships NON-BLOCKING (`fail_on_violation` defaults to
+    `false`) and must stay that way.** `ffreis-rust-shared` itself,
+    `ffreis-forma` and petlook all call `Utc::now()` today, so flipping the
+    default here turns the whole Rust fleet red on merge the next time
+    Renovate bumps a caller's pin — the identical "silently tighten a gate on
+    every already-migrated caller" trap item 14 records for `in-diff`.
+    Blocking is adopted PER REPO, explicitly, in that repo's own PR, once its
+    call sites take `&dyn Clock` and its allowlist covers its adapters.
+
+    **A committed `allowlist-file` REPLACES the built-in baseline, it does not
+    extend it.** A repo adopting an allowlist has to carry the adapter/bin/
+    test patterns over or it starts flagging its own `Clock` adapter.
+    `tests/clock_lint.bats` asserts exactly that (1 violation, not 0, against
+    `tests/fixtures/clock-violations/allowlist.txt`), because the opposite
+    behaviour is the intuitive guess.
+
+    **Two vacuity guards are load-bearing.** A scan matching zero `.rs` files
+    is a HARD FAILURE (a wrong `working-directory` must never read as clean —
+    item 4b), and an allowlist that swallows every file emits a `::warning::`
+    instead of passing quietly. A non-blocking lint is the easiest kind to
+    break unnoticed: nothing ever goes red, so "found nothing" and "cannot
+    find anything" look identical.
+
+    **`self-test.yml` proves it can fail, and cannot do so with a second
+    `uses:` job.** GitHub forbids `continue-on-error` on a job that calls a
+    reusable workflow (actionlint rejects it outright), so an expected-failure
+    job would redden self-test itself. `assert-clock-lint-can-fail` therefore
+    asserts the non-blocking call's `violations`/`files-checked` outputs AND
+    runs the workflow's own scan step — extracted from the YAML by step name,
+    the same artifact `tests/clock_lint.bats` runs — with
+    `FAIL_ON_VIOLATION=true`, requiring a nonzero exit. Renaming the step
+    `Scan for direct clock reads` breaks both; the extraction fails loudly
+    rather than silently testing nothing.
+
+    `tests/fixtures/clock-violations/` is DELIBERATELY violating: five real
+    reads (imported, fully-qualified, chrono's `Utc::now()`, a
+    `*slot = Instant::now();` deref whose leading asterisk a naive comment
+    filter swallows, and a bare `chrono::Local::now()` call — added because
+    `Local::now()` previously had only NEGATIVE fixture cases, a comment
+    mention and a `clock-lint:allow`-suppressed line, so that spelling was
+    never actually proven to fire), plus a commented mention, a
+    baseline-allowlisted adapter, and a `clock-lint:allow` line — none of
+    which may be counted. Do not "fix" it, for the same reason
+    `examples/partial`'s `shrink_to_fit_len()` stays untested.

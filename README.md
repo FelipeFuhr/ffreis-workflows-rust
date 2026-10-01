@@ -34,6 +34,7 @@ Replace `<sha>` with the commit SHA corresponding to the desired release tag. Av
 | `rust-msrv.yml` | Compile + test-compile against declared MSRV | `msrv` (required), `working-directory`, `build-args` |
 | `rust-bench.yml` | Criterion benchmarks + artifact upload | `toolchain`, `working-directory`, `bench-args`, `timeout-minutes` |
 | `rust-miri.yml` | Miri undefined-behavior detection (nightly) | `working-directory`, `miri-args`, `timeout-minutes` |
+| `rust-clock-lint.yml` | Flags direct wall-clock reads (`SystemTime::now()`, `Utc::now()`, `Local::now()`, `Instant::now()`) outside adapter paths. **Non-blocking by default** | `working-directory`, `fail_on_violation` (default **false**), `allowlist-file` |
 
 ---
 
@@ -208,6 +209,51 @@ Codecov flag so unit and integration floors are tracked independently.
       working-directory: app
       timeout-minutes: 60
 ```
+
+### Clock lint (direct wall-clock reads)
+
+Keeps a crate from quietly reintroducing untestable time. No token-expiry,
+cooldown, lock-decay or contest-week scenario can be replayed while domain code
+reads the host clock directly; `ffreis-rust-shared`'s `clock::Clock` /
+`clock::Rng` / `clock::IdSource` ports are the seam, and this is step 4 of that
+migration — the part that stops the gap reopening.
+
+```yaml
+  clock-lint:
+    uses: FelipeFuhr/ffreis-workflows-rust/.github/workflows/rust-clock-lint.yml@<sha> # v3.x.y
+    with:
+      working-directory: .
+      # Omit (or false) while the repo still reads the clock directly: the job
+      # annotates every finding and stays green. Flip to true, in its own PR,
+      # once the call sites take `&dyn Clock`.
+      fail_on_violation: false
+```
+
+**It ships non-blocking on purpose.** `ffreis-rust-shared` itself, `ffreis-forma`
+and petlook all call `Utc::now()` today, so a blocking default would turn the
+Rust fleet red on merge the moment Renovate bumped a caller's pin — the same
+failure mode rule 14 records for `in-diff`.
+
+**Allowlist.** `allowlist-file` (default `.github/clock-lint-allowlist.txt`)
+takes newline-separated shell globs; `#` starts a comment and `*` crosses `/`.
+When the file is absent this documented baseline applies instead, and the job
+says which source it used:
+
+```
+*/src/clock.rs        */src/bin/*       */tests/*
+*/src/time.rs         */src/main.rs     */benches/*
+*/adapters/*          */build.rs        */examples/*
+*/adapter/*                             */target/*
+*_adapter.rs
+```
+
+A committed allowlist **replaces** the baseline rather than extending it, so
+copy the adapter lines you still need. For a single line that cannot move yet,
+append `// clock-lint:allow — <reason>` to it.
+
+Outputs `violations` and `files-checked`; assert on `files-checked` if you want
+to prove a run was not vacuous. A scan that matches **no** `.rs` file is a hard
+failure, not a pass.
 
 ## Action version pins
 

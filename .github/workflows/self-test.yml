@@ -3,6 +3,7 @@ name: Self Test
 on:
   push:
     branches: [main]
+  workflow_dispatch: {}
 
 # Validates that every workflow defined in this library functions correctly
 # against the minimal example app in examples/hello/.
@@ -313,6 +314,113 @@ jobs:
       working-directory: examples/hello
       # Public repo: self-hosted structurally unavailable — pin explicitly.
       runner: '["ubuntu-latest"]'
+
+  # rust-clock-lint.yml, three ways. examples/hello reads the clock nowhere, so
+  # a green run here proves only the plumbing — the two fixture jobs below are
+  # what prove the gate is not vacuous.
+  clock-lint:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/rust-clock-lint.yml
+    with:
+      working-directory: examples/hello
+      # Public repo: self-hosted structurally unavailable — pin explicitly.
+      runner: '["ubuntu-latest"]'
+
+  # NON-BLOCKING against a deliberately violating fixture: must COUNT the
+  # violations and still exit 0, because that is the shipped default and the
+  # whole fleet inherits it.
+  clock-lint-measures-real-violations:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/rust-clock-lint.yml
+    with:
+      working-directory: tests/fixtures/clock-violations
+      fail_on_violation: false
+      # Public repo: self-hosted structurally unavailable — pin explicitly.
+      runner: '["ubuntu-latest"]'
+
+  # REGRESSION GUARD, same shape as assert-mutation-not-vacuous above.
+  #
+  # A lint that ships non-blocking is the easiest kind to break unnoticed:
+  # nothing ever goes red, so "found nothing" and "cannot find anything" look
+  # identical. Two halves are asserted:
+  #
+  #   1. the real reusable-workflow call above must report a nonzero violation
+  #      count over a nonzero number of SCANNED files;
+  #   2. the blocking path must actually exit nonzero.
+  #
+  # (2) cannot be a second `uses:` job: GitHub does not allow
+  # `continue-on-error` on a job that calls a reusable workflow (actionlint
+  # rejects it), so an expected failure there would redden self-test itself.
+  # Instead this job runs the workflow's OWN scan script, extracted from the
+  # YAML by step name — the same artifact `tests/clock_lint.bats` exercises, so
+  # there is no copy that can drift from what the fleet runs.
+  assert-clock-lint-can-fail:
+    name: Clock lint must be able to fail
+    needs: [clock-lint-measures-real-violations]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: The fixture's violations must be found and counted
+        env:
+          VIOLATIONS: ${{ needs.clock-lint-measures-real-violations.outputs.violations }}
+          FILES: ${{ needs.clock-lint-measures-real-violations.outputs.files-checked }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${FILES:-}" || "$FILES" -eq 0 ]]; then
+            echo "::error title=Vacuous clock lint::the lint scanned no files in tests/fixtures/clock-violations. A zero-file scan reporting success is the exact failure rust-mutation.yml shipped for months."
+            exit 1
+          fi
+
+          if [[ -z "${VIOLATIONS:-}" ]]; then
+            echo "::error title=Vacuous clock lint::the lint produced no violations output at all."
+            exit 1
+          fi
+
+          # The fixture has five real violations plus a commented mention, an
+          # allowlisted adapter and a `clock-lint:allow` line that must NOT be
+          # counted. Exactly 5 — more means the comment/escape-hatch filters
+          # broke, fewer means detection did.
+          if [[ "$VIOLATIONS" -ne 5 ]]; then
+            echo "::error title=Clock lint fixture drift::expected exactly 5 violations in tests/fixtures/clock-violations, got ${VIOLATIONS}. More = the comment or clock-lint:allow filter regressed; fewer = detection regressed. Do not 'fix' the fixture."
+            exit 1
+          fi
+
+          echo "Clock lint measured real violations: ${VIOLATIONS} over ${FILES} scanned file(s), non-blocking."
+
+      - name: And blocking mode must actually go red on them
+        run: |
+          set -euo pipefail
+
+          python3 tests/lib/extract_step.py \
+            .github/workflows/rust-clock-lint.yml \
+            "Scan for direct clock reads" > /tmp/clock-scan.sh
+          [ -s /tmp/clock-scan.sh ] || {
+            echo "::error title=Clock lint drill broken::could not extract the scan step; the step was probably renamed. Fix the name, do not delete this check."
+            exit 1
+          }
+
+          set +e
+          ( cd tests/fixtures/clock-violations \
+              && GITHUB_OUTPUT=/tmp/clock-out GITHUB_STEP_SUMMARY=/tmp/clock-sum \
+                 FAIL_ON_VIOLATION=true ALLOWLIST_FILE=.github/clock-lint-allowlist.txt \
+                 WORKDIR=tests/fixtures/clock-violations \
+                 bash /tmp/clock-scan.sh )
+          rc=$?
+          set -e
+
+          if [ "$rc" -eq 0 ]; then
+            echo "::error title=Clock lint cannot fail::fail_on_violation=true against 5 seeded violations exited 0. The gate is decoration — nobody opting into blocking would ever be blocked."
+            exit 1
+          fi
+
+          echo "Clock lint verified end-to-end: blocking mode exits ${rc} on the seeded violations."
 
   sonar:
     if: vars.SONAR_ENABLED == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)

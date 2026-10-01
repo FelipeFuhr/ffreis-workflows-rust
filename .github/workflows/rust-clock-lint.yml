@@ -1,0 +1,294 @@
+name: Rust Clock Lint (direct clock reads)
+
+# Flags direct wall-clock reads — `SystemTime::now()`, `Utc::now()`,
+# `Local::now()`, `Instant::now()` — outside adapter/bin/test paths, so a crate
+# cannot quietly reintroduce the untestable-time gap that
+# `ffreis-rust-shared`'s `clock::Clock` port exists to close.
+#
+# WHY THIS SHIPS NON-BLOCKING (`fail_on_violation` defaults to FALSE)
+# -------------------------------------------------------------------
+# `ffreis-rust-shared` itself, `ffreis-forma` and petlook all call `Utc::now()`
+# today. A blocking default would turn the whole Rust fleet red on merge the
+# moment Renovate bumped a caller's pin — the same "silently flip a gate on
+# every already-migrated caller" failure mode rule 14 in
+# `.claude/rules/non-obvious-workflow-rules.md` records for `in-diff`. So this
+# warns and annotates by default, and a repo opts into blocking — explicitly,
+# in its own PR — once it has migrated and pinned its allowlist.
+#
+# IT IS STILL A REAL GATE. `self-test.yml` runs it three ways on
+# `tests/fixtures/clock-violations`: non-blocking (must COUNT the violations),
+# blocking (must EXIT NONZERO), and against the allowlist (must count zero).
+# The `assert-clock-lint-can-fail` job fails if the blocking call ever comes
+# back green. A gate nobody has watched fail is decoration.
+#
+# NOT wired for `cargo-build-jobs` (rule 9): this never compiles the caller's
+# workspace — it reads `.rs` files as text, like `rust-deny.yml` reads the
+# manifest.
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: "Directory containing the Cargo workspace"
+        type: string
+        default: "."
+      fail_on_violation:
+        description: >-
+          Fail the job when a direct clock read is found outside the allowlist.
+
+          DEFAULT FALSE on purpose — see the header comment. False still
+          annotates every finding and still reports the count via the
+          `violations` output; it just does not block the merge. Flip it to
+          true per-repo, in a deliberate PR, once that repo's call sites take
+          `&dyn Clock` and its allowlist covers the adapters that legitimately
+          read the host clock.
+        type: boolean
+        default: false
+      allowlist-file:
+        description: >-
+          Path (relative to `working-directory`) of a newline-separated list of
+          shell-glob path patterns that may read the clock directly. `#` starts
+          a comment; blank lines are ignored. `*` crosses `/`, so
+          `*/adapters/*` matches at any depth.
+
+          When the file is absent the DOCUMENTED BASELINE applies instead
+          (adapter/bin/test/bench/example/build-script paths plus
+          `src/clock.rs` and `src/time.rs`) and the job says so in its log and
+          summary — an absent allowlist is never silently an empty one. Commit
+          a real file to narrow or widen it; the baseline is printed verbatim
+          in the job summary so a repo can copy it as a starting point.
+        type: string
+        default: ".github/clock-lint-allowlist.txt"
+      run_on_draft:
+        description: "Run even on draft PRs (default: skip on draft to save CI minutes)"
+        required: false
+        type: boolean
+        default: false
+      runner:
+        description: |
+          JSON-encoded runner label(s). Default: self-hosted [self-hosted, local]. Pass '["ubuntu-latest"]' for GitHub-hosted.
+        required: false
+        type: string
+        default: '["self-hosted","local"]'
+    outputs:
+      violations:
+        description: "Number of direct clock reads found outside the allowlist."
+        value: ${{ jobs.clock-lint.outputs.violations }}
+      files-checked:
+        description: >-
+          Number of .rs files actually scanned. Assert on this to prove the run
+          was not vacuous — a misconfigured working-directory scans nothing.
+        value: ${{ jobs.clock-lint.outputs.files-checked }}
+
+jobs:
+  clock-lint:
+    if: ${{ inputs.run_on_draft || vars.CI_RUN_ON_DRAFT == 'true' || github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    name: Clock lint
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    # PUBLIC repos are FORCED onto GitHub-hosted runners, overriding `runner`.
+    # A public repo accepts fork pull requests, and a self-hosted runner
+    # executing fork-authored code would run arbitrary code on the homelab
+    # cluster. This is the one case where honouring the caller's input would be
+    # wrong. Private repos keep whatever `runner` says (default: self-hosted).
+    runs-on: ${{ github.event.repository.visibility == 'public' && fromJson('["ubuntu-latest"]') || fromJson(inputs.runner) }}
+    outputs:
+      violations: ${{ steps.scan.outputs.violations }}
+      files-checked: ${{ steps.scan.outputs.files-checked }}
+
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      # `tests/clock_lint.bats` extracts THIS script by name and runs it
+      # against fixtures, so the suite exercises the shipped artifact rather
+      # than a copy that can drift (same approach as
+      # `resolve_build_parallelism`). Keep the step name stable.
+      - name: Scan for direct clock reads
+        id: scan
+        env:
+          FAIL_ON_VIOLATION: ${{ inputs.fail_on_violation }}
+          ALLOWLIST_FILE: ${{ inputs.allowlist-file }}
+          WORKDIR: ${{ inputs.working-directory }}
+        run: |
+          set -euo pipefail
+
+          # The four reads that make a flow unreplayable. Matching the bare
+          # `X::now(` substring deliberately catches every spelling —
+          # `std::time::SystemTime::now()`, `chrono::Utc::now()`, an imported
+          # `Utc::now()` — without needing to model use-statements.
+          pattern='(SystemTime|Utc|Local|Instant)::now[[:space:]]*\('
+
+          # Documented baseline, used verbatim when no allowlist file exists.
+          # These are the paths where reading the host clock is the POINT: the
+          # adapter that implements the port, binaries wiring it up, and code
+          # that never ships (tests, benches, examples, build scripts).
+          baseline=(
+            '*/src/clock.rs'
+            '*/src/time.rs'
+            '*/adapters/*'
+            '*/adapter/*'
+            '*_adapter.rs'
+            '*/src/bin/*'
+            '*/src/main.rs'
+            '*/build.rs'
+            '*/tests/*'
+            '*/benches/*'
+            '*/examples/*'
+            '*/target/*'
+          )
+
+          allow=()
+          allow_source=""
+          if [ -n "${ALLOWLIST_FILE:-}" ] && [ -f "${ALLOWLIST_FILE}" ]; then
+            while IFS= read -r raw || [ -n "$raw" ]; do
+              raw="${raw%%#*}"
+              raw="${raw#"${raw%%[![:space:]]*}"}"
+              raw="${raw%"${raw##*[![:space:]]}"}"
+              [ -n "$raw" ] && allow+=("$raw")
+            done < "${ALLOWLIST_FILE}"
+            allow_source="allowlist file ${ALLOWLIST_FILE} (${#allow[@]} pattern(s))"
+          else
+            allow=("${baseline[@]}")
+            allow_source="built-in baseline (no ${ALLOWLIST_FILE:-allowlist} in this repo)"
+          fi
+          echo "allowlist source: ${allow_source}"
+
+          allowed() {
+            local path="$1" glob
+            for glob in ${allow[@]+"${allow[@]}"}; do
+              # shellcheck disable=SC2254  # the pattern IS the glob, by design
+              case "$path" in
+                $glob) return 0 ;;
+              esac
+            done
+            return 1
+          }
+
+          files=()
+          while IFS= read -r f; do
+            files+=("$f")
+          done < <(find . -type f -name '*.rs' -not -path './target/*' | sort)
+
+          # Zero .rs files means the working-directory is wrong, not that the
+          # crate is clean. Rule 4b: absence of evidence is not evidence of
+          # success — this repo has already shipped one gate that reported a
+          # perfect score while measuring nothing.
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error title=Clock lint scanned nothing::no .rs files under working-directory '${WORKDIR}'. Fix the caller's working-directory input; a zero-file scan is not a pass."
+            exit 1
+          fi
+
+          violations=0
+          scanned=0
+          findings=""
+          level="warning"
+          if [ "${FAIL_ON_VIOLATION}" = "true" ]; then
+            level="error"
+          fi
+
+          for file in "${files[@]}"; do
+            rel="${file#./}"
+            if allowed "$file" || allowed "$rel"; then
+              continue
+            fi
+            scanned=$((scanned + 1))
+
+            # `|| true`: grep exits 1 when a file has no match, which is the
+            # SUCCESS case here. The loop body — not grep's status — is what
+            # counts findings. `IFS=:` with two read targets puts the line
+            # number in the first and the whole rest of the line, colons and
+            # leading indentation intact, in the second.
+            while IFS=: read -r lineno text; do
+              [ -n "${lineno:-}" ] || continue
+
+              trimmed="${text#"${text%%[![:space:]]*}"}"
+              # A mention in a comment is documentation, not a clock read.
+              # `'* '` and `'*/'` are block-comment continuations; a bare `*`
+              # glob would also swallow `*self.0 = SystemTime::now();`, which
+              # is a real deref statement and a real violation.
+              case "$trimmed" in
+                '//'* | '/*'* | '* '* | '*/'*) continue ;;
+              esac
+              # Escape hatch of last resort; must carry a reason after it.
+              case "$text" in
+                *clock-lint:allow*) continue ;;
+              esac
+
+              call="$(printf '%s' "$trimmed" | grep -oE "$pattern" | head -1 || true)"
+              [ -n "$call" ] || call="direct clock read"
+
+              if [ "${WORKDIR:-.}" != "." ] && [ -n "${WORKDIR:-}" ]; then
+                annot="${WORKDIR%/}/${rel}"
+              else
+                annot="${rel}"
+              fi
+
+              # shellcheck disable=SC2016  # the backticks are markdown for the
+              # annotation GitHub renders, not command substitution
+              printf '::%s file=%s,line=%s,title=Direct clock read::%s is a direct wall-clock read outside an adapter path. Take `clock: &dyn Clock` (ffreis_rust_shared::clock) so the flow can be replayed; add the path to %s if this IS the adapter, or append `// clock-lint:allow — <reason>` to the line.\n' \
+                "$level" "$annot" "$lineno" "$call" "${ALLOWLIST_FILE:-the allowlist}"
+
+              findings="${findings}| \`${annot}\` | ${lineno} | \`${call}\` |"$'\n'
+              violations=$((violations + 1))
+            done < <(grep -nE "$pattern" "$file" 2>/dev/null || true)
+          done
+
+          # An allowlist that swallows every file is the other way to look
+          # clean without measuring anything. Say so out loud.
+          if [ "${scanned}" -eq 0 ]; then
+            echo "::warning title=Clock lint scanned no unallowlisted file::all ${#files[@]} .rs file(s) matched the allowlist (${allow_source}). The gate cannot find anything in this configuration — narrow the allowlist."
+          fi
+
+          {
+            echo "violations=${violations}"
+            echo "files-checked=${scanned}"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Clock lint"
+            echo
+            echo "- scanned: **${scanned}** of ${#files[@]} \`.rs\` file(s) (the rest are allowlisted)"
+            echo "- violations: **${violations}**"
+            echo "- allowlist: ${allow_source}"
+            echo "- blocking: \`fail_on_violation=${FAIL_ON_VIOLATION}\`"
+            echo
+            if [ "${violations}" -gt 0 ]; then
+              echo "| File | Line | Call |"
+              echo "|---|---|---|"
+              printf '%s' "${findings}"
+              echo
+            fi
+            echo "<details><summary>Baseline allowlist (used when no allowlist file is committed)</summary>"
+            echo
+            echo '```'
+            printf '%s\n' "${baseline[@]}"
+            echo '```'
+            echo
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Report in words, not a bare count: a digit in a log is easy to
+          # mistake for an exit status.
+          if [ "${violations}" -eq 0 ]; then
+            echo "clock-lint: PASS — no direct clock reads outside the allowlist (${scanned} file(s) scanned)."
+            exit 0
+          fi
+
+          if [ "${FAIL_ON_VIOLATION}" = "true" ]; then
+            echo "::error title=Clock lint FAILED::found ${violations} direct clock read(s) outside the allowlist and fail_on_violation is true. Route them through ffreis_rust_shared::clock::Clock, or allowlist the adapter paths."
+            echo "clock-lint: FAIL — ${violations} violation(s), blocking (fail_on_violation=true)."
+            exit 1
+          fi
+
+          echo "clock-lint: WARN — ${violations} violation(s) annotated, NOT blocking (fail_on_violation=false). Flip fail_on_violation once this repo has migrated."
