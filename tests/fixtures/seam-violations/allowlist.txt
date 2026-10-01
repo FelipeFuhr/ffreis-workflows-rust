@@ -1,0 +1,3 @@
+# Only main.rs is a root here, so composition.rs becomes visible.
+*/src/main.rs
+src/main.rs

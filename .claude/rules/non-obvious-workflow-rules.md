@@ -389,3 +389,18 @@ paths:
     baseline-allowlisted adapter, and a `clock-lint:allow` line — none of
     which may be counted. Do not "fix" it, for the same reason
     `examples/partial`'s `shrink_to_fit_len()` stays untested.
+
+19. **`rust-seam-gate.yml` is the flag-seam audit promoted to a gate, and ships
+    NON-BLOCKING** (`fail_on_violation` defaults to false) for rule 18's
+    reason. It enforces rule 1 of `ffreis-rust-shared`'s `adapter_mode` ("one
+    resolver, always invoked") by flagging adapter construction outside
+    composition roots. Same proof shape as rule 18: `seam-gate-measures-real-violations`
+    must count exactly 5 in `tests/fixtures/seam-violations/`, and
+    `assert-seam-gate-can-fail` runs the extracted `Scan for direct adapter
+    construction` step blocking and requires a nonzero exit. The fixture is
+    DELIBERATELY violating and its negative lines (imports, field/param types,
+    comments, struct defs, `seam-gate:allow`, post-`#[cfg(test)]` code) each
+    name an adapter type on purpose — `tests/seam_gate.bats` asserts that, so
+    a negative check cannot pass vacuously. Do not "fix" it. The default
+    `adapter-types` pattern is read from the workflow by both the bats suite
+    and self-test, never copied.
