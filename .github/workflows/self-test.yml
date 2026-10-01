@@ -3,6 +3,7 @@ name: Self Test
 on:
   push:
     branches: [main]
+  workflow_dispatch: {}
 
 # Validates that every workflow defined in this library functions correctly
 # against the minimal example app in examples/hello/.
@@ -382,12 +383,12 @@ jobs:
             exit 1
           fi
 
-          # The fixture has four real violations plus a commented mention, an
+          # The fixture has five real violations plus a commented mention, an
           # allowlisted adapter and a `clock-lint:allow` line that must NOT be
-          # counted. Exactly 4 — more means the comment/escape-hatch filters
+          # counted. Exactly 5 — more means the comment/escape-hatch filters
           # broke, fewer means detection did.
-          if [[ "$VIOLATIONS" -ne 4 ]]; then
-            echo "::error title=Clock lint fixture drift::expected exactly 4 violations in tests/fixtures/clock-violations, got ${VIOLATIONS}. More = the comment or clock-lint:allow filter regressed; fewer = detection regressed. Do not 'fix' the fixture."
+          if [[ "$VIOLATIONS" -ne 5 ]]; then
+            echo "::error title=Clock lint fixture drift::expected exactly 5 violations in tests/fixtures/clock-violations, got ${VIOLATIONS}. More = the comment or clock-lint:allow filter regressed; fewer = detection regressed. Do not 'fix' the fixture."
             exit 1
           fi
 
@@ -415,7 +416,7 @@ jobs:
           set -e
 
           if [ "$rc" -eq 0 ]; then
-            echo "::error title=Clock lint cannot fail::fail_on_violation=true against 4 seeded violations exited 0. The gate is decoration — nobody opting into blocking would ever be blocked."
+            echo "::error title=Clock lint cannot fail::fail_on_violation=true against 5 seeded violations exited 0. The gate is decoration — nobody opting into blocking would ever be blocked."
             exit 1
           fi
 
