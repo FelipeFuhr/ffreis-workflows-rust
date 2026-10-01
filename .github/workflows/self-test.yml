@@ -422,6 +422,94 @@ jobs:
 
           echo "Clock lint verified end-to-end: blocking mode exits ${rc} on the seeded violations."
 
+  # rust-seam-gate.yml, same three-way shape as the clock lint above.
+  # examples/hello constructs no adapter, so a green run there proves only the
+  # plumbing; the fixture jobs below prove the gate is not vacuous.
+  seam-gate:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/rust-seam-gate.yml
+    with:
+      working-directory: examples/hello
+      # Public repo: self-hosted structurally unavailable — pin explicitly.
+      runner: '["ubuntu-latest"]'
+
+  # NON-BLOCKING against a fixture seeded with 5 direct constructions: must
+  # COUNT them and still exit 0, because that is the shipped default.
+  seam-gate-measures-real-violations:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/rust-seam-gate.yml
+    with:
+      working-directory: tests/fixtures/seam-violations
+      fail_on_violation: false
+      # Public repo: self-hosted structurally unavailable — pin explicitly.
+      runner: '["ubuntu-latest"]'
+
+  # REGRESSION GUARD. The blocking path is exercised by running the workflow's
+  # OWN scan script, extracted by step name, because a `uses:` job cannot carry
+  # `continue-on-error` (see assert-clock-lint-can-fail for the full reasoning).
+  assert-seam-gate-can-fail:
+    name: Seam gate must be able to fail
+    needs: [seam-gate-measures-real-violations]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: The fixture's seeded violations must be found and counted
+        env:
+          VIOLATIONS: ${{ needs.seam-gate-measures-real-violations.outputs.violations }}
+          FILES: ${{ needs.seam-gate-measures-real-violations.outputs.files-checked }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${FILES:-}" || "$FILES" -eq 0 ]]; then
+            echo "::error title=Vacuous seam gate::the gate scanned no files in tests/fixtures/seam-violations."
+            exit 1
+          fi
+          if [[ -z "${VIOLATIONS:-}" ]]; then
+            echo "::error title=Vacuous seam gate::the gate produced no violations output at all."
+            exit 1
+          fi
+          # Exactly 5: more means the type/comment/cfg(test)/escape-hatch
+          # filters regressed, fewer means detection did.
+          if [[ "$VIOLATIONS" -ne 5 ]]; then
+            echo "::error title=Seam gate fixture drift::expected exactly 5 violations in tests/fixtures/seam-violations, got ${VIOLATIONS}. Do not 'fix' the fixture."
+            exit 1
+          fi
+          echo "Seam gate measured real violations: ${VIOLATIONS} over ${FILES} scanned file(s), non-blocking."
+
+      - name: And blocking mode must actually go red on them
+        run: |
+          set -euo pipefail
+
+          python3 tests/lib/extract_step.py \
+            .github/workflows/rust-seam-gate.yml \
+            "Scan for direct adapter construction" > /tmp/seam-scan.sh
+          [ -s /tmp/seam-scan.sh ] || {
+            echo "::error title=Seam gate drill broken::could not extract the scan step; the step was probably renamed. Fix the name, do not delete this check."
+            exit 1
+          }
+          types="$(python3 -c 'import sys,yaml; wf=yaml.safe_load(open(sys.argv[1])); on=wf.get("on") or wf.get(True); print(on["workflow_call"]["inputs"]["adapter-types"]["default"])' .github/workflows/rust-seam-gate.yml)"
+
+          set +e
+          ( cd tests/fixtures/seam-violations \
+              && GITHUB_OUTPUT=/tmp/seam-out GITHUB_STEP_SUMMARY=/tmp/seam-sum \
+                 FAIL_ON_VIOLATION=true ALLOWLIST_FILE=.github/seam-gate-allowlist.txt \
+                 ADAPTER_TYPES="$types" WORKDIR=tests/fixtures/seam-violations \
+                 bash /tmp/seam-scan.sh )
+          rc=$?
+          set -e
+
+          if [ "$rc" -eq 0 ]; then
+            echo "::error title=Seam gate cannot fail::fail_on_violation=true against 5 seeded direct constructions exited 0. The gate is decoration."
+            exit 1
+          fi
+          echo "Seam gate verified end-to-end: blocking mode exits ${rc} on the seeded violations."
+
   sonar:
     if: vars.SONAR_ENABLED == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
     permissions:

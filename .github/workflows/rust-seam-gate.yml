@@ -1,0 +1,320 @@
+name: Rust Seam Gate (direct adapter construction)
+
+# Flags code that CONSTRUCTS an adapter — `MockPaymentGateway::new(..)`,
+# `Arc::new(NoopEmailSender)`, `S3BlobStore::from_env(..)`, a `FakeClock { .. }`
+# literal — outside a composition root. Rule 1 of `ffreis-rust-shared`'s
+# `adapter_mode` (PLATFORM-SCENARIO-PLANE §6) is "one resolver, always
+# invoked": if any code path can build an adapter without going through
+# `ModeResolver`, the per-port mode vector is bypassable. Inside the crate that
+# is enforced by types (no fake adapter has a public constructor). Across the
+# fleet it is enforced HERE, mechanically, rather than by convention.
+#
+# This is the flag-seam audit promoted from advisory to a gate. It reads `.rs`
+# files as text, exactly like `rust-clock-lint.yml`, and follows the same
+# staging discipline.
+#
+# WHY THIS SHIPS NON-BLOCKING (`fail_on_violation` defaults to FALSE)
+# -------------------------------------------------------------------
+# Today the fleet builds adapters wherever it needs them — arcade's domain
+# handlers pick `Mock*`/`Real*` per request, and most crates new up a
+# `SystemClock` in place. A blocking default would turn every Rust repo red the
+# moment Renovate bumped its pin (rule 14's failure mode). So this warns and
+# annotates by default, and a repo opts into blocking — explicitly, in its own
+# PR — once construction lives only in its composition root and its allowlist
+# says where that root is.
+#
+# IT IS STILL A REAL GATE. `self-test.yml` runs it on
+# `tests/fixtures/seam-violations` non-blocking (must COUNT the seeded
+# violations) and blocking (must EXIT NONZERO); the
+# `assert-seam-gate-can-fail` job fails if the blocking run ever comes back
+# green. `tests/seam_gate.bats` drives the same extracted script locally.
+#
+# NOT wired for `cargo-build-jobs` (rule 9): this never compiles anything.
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: "Directory containing the Cargo workspace"
+        type: string
+        default: "."
+      fail_on_violation:
+        description: >-
+          Fail the job when direct adapter construction is found outside the
+          allowlist.
+
+          DEFAULT FALSE on purpose — see the header comment. False still
+          annotates every finding and reports the count via the `violations`
+          output; it just does not block the merge. Flip it to true per-repo,
+          in a deliberate PR, once adapters are built only in the composition
+          root (via ffreis_rust_shared::adapter_mode's resolver for the five
+          switchable ports).
+        type: boolean
+        default: false
+      allowlist-file:
+        description: >-
+          Path (relative to `working-directory`) of a newline-separated list of
+          shell-glob path patterns that may construct adapters directly — the
+          composition root(s). `#` starts a comment; blank lines are ignored.
+          `*` crosses `/`.
+
+          When the file is absent the DOCUMENTED BASELINE applies instead and
+          the job says so; an absent allowlist is never silently an empty one.
+          A committed file REPLACES the baseline rather than extending it.
+        type: string
+        default: ".github/seam-gate-allowlist.txt"
+      adapter-types:
+        description: >-
+          Extended regex (POSIX ERE) for an adapter TYPE NAME. The default
+          matches a known adapter prefix followed by a port-shaped suffix,
+          e.g. `MockPaymentGateway`, `NoopEmailSender`, `S3BlobStore`,
+          `SystemClock`, `InMemoryUserStore`, `DdbSessionStore`. Override to
+          add a repo's own adapter names; keep it anchored on both a prefix
+          and a suffix or it will match domain types.
+        type: string
+        default: "(Mock|Noop|Fake|Fault|Stub|InMemory|Sink|Test|Seeded|Fixed|Sequential|System|Os|Uuid|Ses|S3|Dynamo|Ddb|ReCaptcha|Turnstile|Stripe|Real)[A-Za-z0-9]*(Gateway|Sender|Clock|Challenge|BlobStore|Store|Source|Rng|Ledger|Catalog|Subscriber|Transport|Adapter|Provider)"
+      run_on_draft:
+        description: "Run even on draft PRs (default: skip on draft to save CI minutes)"
+        required: false
+        type: boolean
+        default: false
+      runner:
+        description: |
+          JSON-encoded runner label(s). Default: self-hosted [self-hosted, local]. Pass '["ubuntu-latest"]' for GitHub-hosted.
+        required: false
+        type: string
+        default: '["self-hosted","local"]'
+    outputs:
+      violations:
+        description: "Number of direct adapter constructions found outside the allowlist."
+        value: ${{ jobs.seam-gate.outputs.violations }}
+      files-checked:
+        description: >-
+          Number of .rs files actually scanned. Assert on this to prove the run
+          was not vacuous — a misconfigured working-directory scans nothing.
+        value: ${{ jobs.seam-gate.outputs.files-checked }}
+
+jobs:
+  seam-gate:
+    if: ${{ inputs.run_on_draft || vars.CI_RUN_ON_DRAFT == 'true' || github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    name: Seam gate
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    # PUBLIC repos are FORCED onto GitHub-hosted runners, overriding `runner`
+    # (fork PRs must never execute on the homelab cluster). Same as
+    # rust-clock-lint.yml.
+    runs-on: ${{ github.event.repository.visibility == 'public' && fromJson('["ubuntu-latest"]') || fromJson(inputs.runner) }}
+    outputs:
+      violations: ${{ steps.scan.outputs.violations }}
+      files-checked: ${{ steps.scan.outputs.files-checked }}
+
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      # `tests/seam_gate.bats` extracts THIS script by name and runs it against
+      # fixtures, so the suite exercises the shipped artifact rather than a
+      # copy that can drift. Keep the step name stable.
+      - name: Scan for direct adapter construction
+        id: scan
+        env:
+          FAIL_ON_VIOLATION: ${{ inputs.fail_on_violation }}
+          ALLOWLIST_FILE: ${{ inputs.allowlist-file }}
+          ADAPTER_TYPES: ${{ inputs.adapter-types }}
+          WORKDIR: ${{ inputs.working-directory }}
+        run: |
+          set -euo pipefail
+
+          types="${ADAPTER_TYPES:-}"
+          if [ -z "$types" ]; then
+            echo "::error title=Seam gate misconfigured::adapter-types is empty; an empty pattern matches nothing and the gate would pass vacuously."
+            exit 1
+          fi
+
+          # Three ways to construct an adapter on one line:
+          #   ctor : `Type::new(` / `::with_*(` / `::from_env(` / `::from_config(`
+          #          / `::default(` / `::builder(`
+          #   lit  : `Type { }` / `Type { field: ...` / `Type { field, ...`
+          #   unit : a unit struct used as a VALUE — `(Type)`, `= Type;`,
+          #          `, Type,`, path-qualified or not — but not as a TYPE (`x: Type`, `for Type {`,
+          #          `use ...::Type;`, `struct Type;`), which is preceded by
+          #          `:`, a space or `::` instead.
+          ctor="(^|[^A-Za-z0-9_])(${types})::(new|with_[A-Za-z0-9_]*|from_env|from_config|default|builder)[[:space:]]*\("
+          lit="(^|[^A-Za-z0-9_])(${types})[[:space:]]*\{[[:space:]]*(\}|[a-z_][A-Za-z0-9_]*[[:space:]]*[:,}])"
+          unit="[(=,][[:space:]]*([A-Za-z_][A-Za-z0-9_]*::)*(${types})[[:space:]]*[),;]"
+          pattern="${ctor}|${lit}|${unit}"
+
+          # Documented baseline, used verbatim when no allowlist file exists:
+          # composition roots (where wiring adapters together is the POINT),
+          # the files that DEFINE adapters, the mode-vector resolver itself,
+          # and code that never ships.
+          baseline=(
+            '*/src/main.rs'
+            '*/src/bin/*'
+            '*/composition.rs'
+            '*/composition/*'
+            '*/wiring.rs'
+            '*/wiring/*'
+            '*/adapters.rs'
+            '*/adapters/*'
+            '*/adapter/*'
+            '*_adapter.rs'
+            '*/adapter_fakes.rs'
+            '*/adapter_mode/*'
+            '*/build.rs'
+            '*/tests/*'
+            '*/benches/*'
+            '*/examples/*'
+            '*/target/*'
+          )
+
+          allow=()
+          allow_source=""
+          if [ -n "${ALLOWLIST_FILE:-}" ] && [ -f "${ALLOWLIST_FILE}" ]; then
+            while IFS= read -r raw || [ -n "$raw" ]; do
+              raw="${raw%%#*}"
+              raw="${raw#"${raw%%[![:space:]]*}"}"
+              raw="${raw%"${raw##*[![:space:]]}"}"
+              [ -n "$raw" ] && allow+=("$raw")
+            done < "${ALLOWLIST_FILE}"
+            allow_source="allowlist file ${ALLOWLIST_FILE} (${#allow[@]} pattern(s))"
+          else
+            allow=("${baseline[@]}")
+            allow_source="built-in baseline (no ${ALLOWLIST_FILE:-allowlist} in this repo)"
+          fi
+          echo "allowlist source: ${allow_source}"
+
+          allowed() {
+            local path="$1" glob
+            for glob in ${allow[@]+"${allow[@]}"}; do
+              # shellcheck disable=SC2254  # the pattern IS the glob, by design
+              case "$path" in
+                $glob) return 0 ;;
+              esac
+            done
+            return 1
+          }
+
+          files=()
+          while IFS= read -r f; do
+            files+=("$f")
+          done < <(find . -type f -name '*.rs' -not -path './target/*' | sort)
+
+          # Zero .rs files means the working-directory is wrong, not that the
+          # crate is clean (rule 4b: absence of evidence is not evidence of
+          # success).
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error title=Seam gate scanned nothing::no .rs files under working-directory '${WORKDIR}'. Fix the caller's working-directory input; a zero-file scan is not a pass."
+            exit 1
+          fi
+
+          violations=0
+          scanned=0
+          findings=""
+          level="warning"
+          if [ "${FAIL_ON_VIOLATION}" = "true" ]; then
+            level="error"
+          fi
+
+          for file in "${files[@]}"; do
+            rel="${file#./}"
+            if allowed "$file" || allowed "$rel"; then
+              continue
+            fi
+            scanned=$((scanned + 1))
+
+            # Unit tests constructing doubles directly is what tests are FOR.
+            # Rust convention puts `#[cfg(test)] mod tests` last, so scanning
+            # stops at the first `#[cfg(test)]`. Anything placed after it is
+            # unscanned — a known, documented limit, not an oversight.
+            # `|| true`: no `#[cfg(test)]` is the common case, not an error.
+            stop="$(grep -nE '^[[:space:]]*#\[cfg\(test\)\]' "$file" | head -1 | cut -d: -f1 || true)"
+
+            while IFS=: read -r lineno text; do
+              [ -n "${lineno:-}" ] || continue
+              if [ -n "$stop" ] && [ "$lineno" -ge "$stop" ]; then
+                break
+              fi
+
+              trimmed="${text#"${text%%[![:space:]]*}"}"
+              # A mention in a comment is documentation, not construction.
+              case "$trimmed" in
+                '//'* | '/*'* | '* '* | '*/'*) continue ;;
+              esac
+              # Escape hatch of last resort; must carry a reason after it.
+              case "$text" in
+                *seam-gate:allow*) continue ;;
+              esac
+
+              call="$(printf '%s' "$trimmed" | grep -oE "$pattern" | head -1 | sed -E 's/^[^A-Za-z0-9_]+//' || true)"
+              [ -n "$call" ] || call="direct adapter construction"
+
+              if [ "${WORKDIR:-.}" != "." ] && [ -n "${WORKDIR:-}" ]; then
+                annot="${WORKDIR%/}/${rel}"
+              else
+                annot="${rel}"
+              fi
+
+              # shellcheck disable=SC2016  # backticks are markdown, not substitution
+              printf '::%s file=%s,line=%s,title=Direct adapter construction::%s builds an adapter outside a composition root. Build adapters only where the app is wired (main.rs / a composition module), choosing fakes through ffreis_rust_shared::adapter_mode::ModeResolver; add the path to %s if this IS the composition root, or append `// seam-gate:allow — <reason>` to the line.\n' \
+                "$level" "$annot" "$lineno" "$call" "${ALLOWLIST_FILE:-the allowlist}"
+
+              findings="${findings}| \`${annot}\` | ${lineno} | \`${call}\` |"$'\n'
+              violations=$((violations + 1))
+            done < <(grep -nE "$pattern" "$file" 2>/dev/null || true)
+          done
+
+          if [ "${scanned}" -eq 0 ]; then
+            echo "::warning title=Seam gate scanned no unallowlisted file::all ${#files[@]} .rs file(s) matched the allowlist (${allow_source}). The gate cannot find anything in this configuration — narrow the allowlist."
+          fi
+
+          {
+            echo "violations=${violations}"
+            echo "files-checked=${scanned}"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Seam gate"
+            echo
+            echo "- scanned: **${scanned}** of ${#files[@]} \`.rs\` file(s) (the rest are allowlisted)"
+            echo "- violations: **${violations}**"
+            echo "- allowlist: ${allow_source}"
+            echo "- blocking: \`fail_on_violation=${FAIL_ON_VIOLATION}\`"
+            echo
+            if [ "${violations}" -gt 0 ]; then
+              echo "| File | Line | Construction |"
+              echo "|---|---|---|"
+              printf '%s' "${findings}"
+              echo
+            fi
+            echo "<details><summary>Baseline allowlist (used when no allowlist file is committed)</summary>"
+            echo
+            echo '```'
+            printf '%s\n' "${baseline[@]}"
+            echo '```'
+            echo
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${violations}" -eq 0 ]; then
+            echo "seam-gate: PASS — no direct adapter construction outside the allowlist (${scanned} file(s) scanned)."
+            exit 0
+          fi
+
+          if [ "${FAIL_ON_VIOLATION}" = "true" ]; then
+            echo "::error title=Seam gate FAILED::found ${violations} direct adapter construction(s) outside the allowlist and fail_on_violation is true. Move construction into the composition root, or allowlist it."
+            echo "seam-gate: FAIL — ${violations} violation(s), blocking (fail_on_violation=true)."
+            exit 1
+          fi
+
+          echo "seam-gate: WARN — ${violations} violation(s) annotated, NOT blocking (fail_on_violation=false). Flip fail_on_violation once this repo builds adapters only in its composition root."

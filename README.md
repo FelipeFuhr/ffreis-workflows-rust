@@ -35,6 +35,7 @@ Replace `<sha>` with the commit SHA corresponding to the desired release tag. Av
 | `rust-bench.yml` | Criterion benchmarks + artifact upload | `toolchain`, `working-directory`, `bench-args`, `timeout-minutes` |
 | `rust-miri.yml` | Miri undefined-behavior detection (nightly) | `working-directory`, `miri-args`, `timeout-minutes` |
 | `rust-clock-lint.yml` | Flags direct wall-clock reads (`SystemTime::now()`, `Utc::now()`, `Local::now()`, `Instant::now()`) outside adapter paths. **Non-blocking by default** | `working-directory`, `fail_on_violation` (default **false**), `allowlist-file` |
+| `rust-seam-gate.yml` | Flags direct adapter construction (`MockPaymentGateway::new(..)`, `Arc::new(NoopEmailSender)`, `S3BlobStore::from_env(..)`, `FakeClock { .. }`) outside composition roots, so `ffreis-rust-shared`'s mode-vector resolver cannot be bypassed. **Non-blocking by default** | `working-directory`, `fail_on_violation` (default **false**), `allowlist-file`, `adapter-types` |
 
 ---
 
@@ -254,6 +255,51 @@ append `// clock-lint:allow — <reason>` to it.
 Outputs `violations` and `files-checked`; assert on `files-checked` if you want
 to prove a run was not vacuous. A scan that matches **no** `.rs` file is a hard
 failure, not a pass.
+
+### Seam gate (direct adapter construction)
+
+Rule 1 of `ffreis-rust-shared`'s `adapter_mode` (PLATFORM-SCENARIO-PLANE §6) is
+"one resolver, always invoked": a code path that constructs an adapter without
+going through `ModeResolver` makes the per-port mode vector bypassable. Inside
+the crate that is enforced by types; across the fleet it is enforced here.
+
+```yaml
+  seam-gate:
+    uses: FelipeFuhr/ffreis-workflows-rust/.github/workflows/rust-seam-gate.yml@<sha> # v3.x.y
+    with:
+      working-directory: .
+      # Omit (or false) while the repo still builds adapters in domain code:
+      # the job annotates every finding and stays green. Flip to true, in its
+      # own PR, once construction lives only in the composition root.
+      fail_on_violation: false
+```
+
+**Staging, same as the clock lint.** It ships non-blocking; a repo opts in once
+it complies. Self-test proves it fails: `assert-seam-gate-can-fail` runs it
+blocking against `tests/fixtures/seam-violations` (5 seeded constructions) and
+goes red if it ever exits 0.
+
+**What counts.** An adapter type name — `adapter-types`, default a known prefix
+(`Mock`, `Noop`, `Fake`, `InMemory`, `System`, `S3`, `Ses`, `Ddb`, `Real`, ...)
+plus a port suffix (`Gateway`, `Sender`, `Clock`, `Challenge`, `BlobStore`,
+`Store`, ...) — used as a value: `::new(`/`::with_*(`/`::from_env(`/
+`::default(`/`::builder(`, a struct literal, or a unit struct after `(`, `=` or
+`,`. Types, imports, comments and anything after the file's first
+`#[cfg(test)]` are not flagged.
+
+**Baseline allowlist** (used when `allowlist-file`, default
+`.github/seam-gate-allowlist.txt`, is absent; a committed file replaces it):
+
+```
+*/src/main.rs     */composition.rs   */adapters.rs   */adapter_fakes.rs   */tests/*
+*/src/bin/*       */composition/*    */adapters/*    */adapter_mode/*     */benches/*
+                  */wiring.rs        */adapter/*     */build.rs           */examples/*
+                  */wiring/*         *_adapter.rs                         */target/*
+```
+
+For a single line that cannot move yet, append `// seam-gate:allow — <reason>`.
+Outputs `violations` and `files-checked`; a scan matching no `.rs` file, or an
+empty `adapter-types`, is a hard failure.
 
 ## Action version pins
 
