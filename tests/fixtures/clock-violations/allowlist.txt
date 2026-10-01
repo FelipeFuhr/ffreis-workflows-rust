@@ -1,0 +1,18 @@
+# Fixture allowlist for rust-clock-lint.yml's `allowlist-file` input.
+#
+# Deliberately NOT at the input's default path (.github/clock-lint-allowlist.txt)
+# so the fixture's default-path runs still exercise the built-in baseline.
+#
+# `*` crosses `/`. Comments and blank lines are ignored.
+#
+# A committed allowlist REPLACES the baseline, it does not extend it. That is
+# why this file suppresses src/lib.rs's four violations yet leaves
+# src/adapters/system_clock.rs — baseline-allowlisted, not listed here —
+# counted. `tests/clock_lint.bats` asserts exactly that: 1 violation, not 0.
+# A repo adopting an allowlist must therefore carry its adapter paths over.
+
+*/src/lib.rs          # suppresses every violation in the fixture
+
+# A pattern that matches nothing, to prove a longer allowlist does not start
+# matching by accident.
+*/src/not_a_real_file.rs
