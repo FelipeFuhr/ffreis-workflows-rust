@@ -323,7 +323,7 @@ jobs:
 
       - name: Sonar scan (with local fallback)
         id: sonar
-        uses: FelipeFuhr/ffreis-workflows-general/.github/actions/sonar-scan-with-fallback@2a42e71188441922b2b926899d86fcc04fa4d7f0
+        uses: FelipeFuhr/ffreis-workflows-general/.github/actions/sonar-scan-with-fallback@a6763fec11bf3b51dd1b92851fa99b1ad5d0a6d6
         with:
           project-base-dir: ${{ inputs.working-directory }}
           project-key: ${{ steps.sonar-args.outputs.project_key }}
