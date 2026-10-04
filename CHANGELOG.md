@@ -1,5 +1,17 @@
 # Changelog
 
+## [3.3.0](https://github.com/FelipeFuhr/ffreis-workflows-rust/compare/v3.2.0...v3.3.0) (2026-10-04)
+
+
+### Features
+
+* **sonar:** route through the shared local-fallback composite ([67f3124](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/67f3124a92061859bfbe142e36f261dd9875f8a6))
+
+
+### Bug Fixes
+
+* **sonar:** wire run_on_draft into the job gate ([7247f99](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/7247f9985858b89ff200980bc6dc9149ff73ce63))
+
 ## [3.2.0](https://github.com/FelipeFuhr/ffreis-workflows-rust/compare/v3.1.0...v3.2.0) (2026-10-01)
 
 
