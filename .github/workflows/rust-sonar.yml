@@ -97,6 +97,9 @@ on:
         required: false
       SONAR_TOKEN:
         required: true
+      CI_NOTIFY_ROLE_ARN:
+        description: "IAM role ARN for the fleet's monitor-Lambda CI-fallback notification (optional; omit to disable notification entirely — no AWS call is made)."
+        required: false
 
 jobs:
   sonar:
@@ -312,16 +315,21 @@ jobs:
           EXTRA=""
           [ -n "$PROJECT_KEY" ] && EXTRA="$EXTRA -Dsonar.projectKey=$PROJECT_KEY"
           [ -n "$ORGANIZATION" ] && EXTRA="$EXTRA -Dsonar.organization=$ORGANIZATION"
-          echo "args=$EXTRA" >> "$GITHUB_OUTPUT"
+          {
+            echo "args=$EXTRA"
+            echo "project_key=$PROJECT_KEY"
+            echo "organization=$ORGANIZATION"
+          } >> "$GITHUB_OUTPUT"
 
-      - name: SonarCloud Scan
-        uses: SonarSource/sonarqube-scan-action@a31c9398be7ace6bbfaf30c0bd5d415f843d45e9 # nosemgrep: generic.secrets.security.detected-sonarqube-docs-api-key.detected-sonarqube-docs-api-key
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: https://sonarcloud.io
+      - name: Sonar scan (with local fallback)
+        id: sonar
+        uses: FelipeFuhr/ffreis-workflows-general/.github/actions/sonar-scan-with-fallback@2a42e71188441922b2b926899d86fcc04fa4d7f0
         with:
-          projectBaseDir: ${{ inputs.working-directory }}
-          args: >
-            ${{ steps.sonar-args.outputs.args }}
+          project-base-dir: ${{ inputs.working-directory }}
+          project-key: ${{ steps.sonar-args.outputs.project_key }}
+          organization: ${{ steps.sonar-args.outputs.organization }}
+          sonar-token: ${{ secrets.SONAR_TOKEN }}
+          extra-sonar-args: >
             -Dsonar.rust.lcov.reportPaths=lcov.info
             -Dsonar.sources=src
+          notify-role-to-assume: ${{ secrets.CI_NOTIFY_ROLE_ARN }}
