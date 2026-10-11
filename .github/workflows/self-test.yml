@@ -90,6 +90,21 @@ jobs:
       # Public repo: self-hosted structurally unavailable — pin explicitly.
       runner: '["ubuntu-latest"]'
 
+  # Dogfoods the `packages` per-package matrix alongside the `lint` job above,
+  # which dogfoods the DEFAULT whole-workspace path. Both run here and in
+  # ci.yml, so the pair is the live proof that adding `packages` left the
+  # default path alone.
+  lint-per-package:
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/rust-lint.yml
+    with:
+      working-directory: examples/hello
+      packages: '["hello"]'
+      # Public repo: self-hosted structurally unavailable — pin explicitly.
+      runner: '["ubuntu-latest"]'
+
   test:
     permissions:
       contents: read
@@ -100,6 +115,21 @@ jobs:
       # Exercise the nextest path (incl. the separate doctest run) so a
       # regression in that branch breaks self-test, not a downstream caller.
       nextest: true
+      # Public repo: self-hosted structurally unavailable — pin explicitly.
+      runner: '["ubuntu-latest"]'
+
+  test-per-package:
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/rust-test.yml
+    with:
+      working-directory: examples/hello
+      # Bare-name spelling (not JSON), so the list-splitting branch of the
+      # normaliser is exercised for real too. nextest stays off here so the
+      # `cargo test` leg of the split is the one under test — the nextest leg
+      # is covered by the `test` job above.
+      packages: hello
       # Public repo: self-hosted structurally unavailable — pin explicitly.
       runner: '["ubuntu-latest"]'
 

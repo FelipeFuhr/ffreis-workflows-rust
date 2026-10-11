@@ -111,8 +111,37 @@ paths:
    compiling a heavy dependency graph (e.g. `aws-sdk-*` crates).
 
    **`"auto"` derives the cap from `/sys/fs/cgroup/memory.max` at job start**
-   (~1 GiB per compile unit, capped by `nproc`, floored at 1) in a
-   `Resolve build parallelism` step that runs before anything invokes cargo.
+   (~1 GiB per compile unit, MINUS a 1 GiB reserve for the runner agent,
+   capped by `nproc`, floored at 1) in a `Resolve build parallelism` step that
+   runs before anything invokes cargo.
+
+   **The 1 GiB reserve is load-bearing, and its absence was a live outage.**
+   The agent shares the pod cgroup with rustc, so budgeting the WHOLE limit to
+   compile units kills the agent, not the build: the pod is OOMKilled
+   (exit 137), restarts `0/1 Ready`, and the job surfaces as `cancelled` —
+   which then cascades (a cancelled mutation shard makes `mutation-aggregate`
+   fail with "Not computing an aggregate score"). Before the reserve, `auto`
+   derived **3** on the `heavy` tier against that tier's hard 3Gi cap, i.e. it
+   left zero bytes for the agent. With it, `heavy` derives **2**, which
+   independently reproduces `ffreis-home-infra`'s own measured pin
+   (`gha_runner_cargo_build_jobs: 2`, recorded there as "2 jobs peaks ~3 GiB
+   vs ~5.4 GiB at the ~4-job default"). `light` (1.5Gi) still floors to 1, so
+   the reserve changed exactly one tier — it is a targeted fix, not a
+   fleet-wide retune.
+
+   **The live tiers, and where they are defined.** The authority is
+   `platform/ffreis-home-infra`'s ansible role
+   `roles/gha_runner/defaults/main.yml`, key `gha_runner_deployments` (read
+   2026-10-11): `heavy` = 1750m cpu / 3Gi memory / 24Gi ephemeral-storage,
+   `light` = 1000m / 1.5Gi / 12Gi. `requests == limits` on both, so these are
+   Guaranteed-QoS HARD caps with no burst room. **`heavy` is the largest tier
+   these workflows target** — that role also defines `large` (5Gi) and `xl`
+   (8Gi), and item 13 records why reaching for them is a trap (they are
+   unschedulable alongside light/heavy, so a job queues forever instead of
+   failing, which is worse than the OOM). Do not introduce a `large` or `xl`
+   default here; split the job instead (item 9a).
+
+   **The resolve step is the single authority on the value.**
    It is deliberately NOT a job-level `env:` any more: a `$GITHUB_ENV` write
    overrides both a job-level `env:` and the pod's container env (measured on
    a real runner, not assumed), so the step is authoritative — and if it were
@@ -131,14 +160,68 @@ paths:
    `ffreis-rust-shared` peaked at 2541 MB with `jobs=1` against a 2560M limit,
    so memory is dominated by a per-crate baseline rather than being linear in
    job count — no derivation rescues a crate whose baseline alone exceeds the
-   pod, and the honest fix there is a bigger tier. Unreadable or unlimited
-   limits (hosted runners, cgroup v1) fall back to `2`, never to a large guess.
+   pod. The honest fix there is to make the JOB SMALLER (item 9a), not to ask
+   for a bigger tier. Unreadable or unlimited limits (hosted runners,
+   cgroup v1) fall back to `2`, never to a large guess.
+
+   9a. **`packages` on `rust-lint.yml` and `rust-test.yml` splits one
+   whole-workspace job into one job per crate** (a matrix leg per package,
+   each invoking cargo with `-p <package>`). This is the lever that actually
+   shrinks the work, where `cargo-build-jobs` only caps concurrency inside a
+   job that still compiles everything — and peak memory is set by the largest
+   compilation unit, not by how many run at once.
+
+   **Backward compatibility is the whole design, and it is asserted, not
+   assumed.** An empty `packages` (the default) leaves the pre-existing job
+   untouched: same job id (`lint` / `test`), same command, no `needs`, no
+   `strategy`. The split lives in a SEPARATE job id (`lint-package` /
+   `test-package`) gated on `inputs.packages != ''`, and the original is gated
+   on `inputs.packages == ''` — mutually exclusive, never both. The reason to
+   be this careful: `lint` and `test` are required status checks on consumer
+   repos across two owners, Renovate auto-merges pin bumps with no human
+   review, and folding the original into a matrix would append the leg's
+   values to the rendered job name and leave those checks permanently
+   pending — which reads as "still running", not as a break.
+   `tests/packages_matrix.bats` cases 8-11 assert each half of that
+   structurally against the shipped YAML.
+
+   **`fail-fast: false`** on the matrix: one crate's failure must not cancel
+   its siblings, both because you want every crate's errors from one run and
+   because a cancelled sibling surfaces as `cancelled` rather than a failure
+   — the same misreading that cost multiple sessions in item 13.
+
+   **Caches are ISOLATED per leg**, not shared: the `rust-cache` `key` carries
+   the package name. A shared key would restore the whole workspace's
+   `target/` into every leg, re-inflating both the memory and the 24Gi
+   ephemeral-storage pressure the split exists to remove, and concurrent jobs
+   sharing one cargo target dir have already corrupted results in this fleet.
+   `rust-cache`'s default key already folds in the matrix, but relying on that
+   is an undeclared assumption, so it is declared.
+
+   **A non-empty `packages` that parses to zero names is a HARD ERROR**, never
+   a silent fall back to the whole-workspace run — the caller set it precisely
+   because the workspace does not fit, so quietly restoring the unsplit
+   command reintroduces the OOM it was escaping. Same rule as item 4b: absence
+   of evidence is not evidence of success. Package names must also START with
+   an alphanumeric or `_`, because a bare charset class accepted `--workspace`
+   and would have passed it to cargo as a FLAG (caught by its own bats case,
+   not by review).
+
+   Three input spellings normalise to the same matrix (JSON array, comma list,
+   newline list). `ci.yml` and `self-test.yml` each dogfood BOTH paths —
+   `lint`/`test` on the default, `lint-per-package`/`test-per-package` on the
+   split, using the JSON and bare-name spellings respectively so both branches
+   of the normaliser run for real on every PR, not only in bats.
 
    `tests/resolve_build_parallelism.bats` (run by `make test`, and by the
    `resolve-parallelism-tests` job in `ci.yml`) exercises the script
    **extracted from the YAML** rather than a copy, and guards the 13 duplicated
-   copies against drifting apart. Which workflows need the step is derived from
-   the cargo verbs each file invokes, not hand-listed.
+   copies against drifting apart. Its `case 2b` asserts the agent reserve as a
+   PROPERTY (the compile-unit budget always leaves >= 1 GiB of the pod) rather
+   than as three magic numbers, so a future retune that spends the whole limit
+   again fails even if it updates `case 2`'s expected values to match itself.
+   Which workflows need the step is derived from the cargo verbs each file
+   invokes, not hand-listed.
 
    `rust-fmt.yml`, `rust-deny.yml`, `rust-affected.yml`, `rust-container.yml`,
    `rust-semgrep.yml`, `rust-security.yml`, and `rust-lock-sync.yml` are

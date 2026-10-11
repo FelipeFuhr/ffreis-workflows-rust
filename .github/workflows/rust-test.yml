@@ -98,31 +98,196 @@ on:
           limit at job start, so a tier resize cannot silently over-commit
           callers. Pass an explicit number to override (it always wins).
 
-          Was "4", documented as memory-safe on a 4.5Gi self-hosted pod. That
-          figure went stale — the heavy tier was resized 4.5Gi -> 2Gi -> 2.25Gi
-          -> 2.5Gi -> 3Gi and this comment was never updated, so callers
-          inheriting it were silently over-committed. Deriving it is what stops
-          that recurring. The symptom is not a build failure: the runner agent
-          shares the pod cgroup, so IT dies, surfacing as "the self-hosted
-          runner lost communication with the server" with no logs.
+          THE REAL POD, as of 2026-10-11. The authority is
+          platform/ffreis-home-infra's ansible role
+          `roles/gha_runner/defaults/main.yml`, key `gha_runner_deployments`:
 
-          Measured on ffreis-rust-shared under a cgroup mirroring the heavy pod
-          (MemoryMax=2560M, no swap, 2 CPU): peak anon 2541 MB at jobs=1 —
-          99% of the limit before any parallelism. Memory is therefore
-          dominated by a per-crate baseline, not linear in job count; a crate
-          whose baseline alone exceeds the pod needs a bigger tier, not a
-          smaller cap. Hosted-runner callers with real memory can pass a
-          higher value (e.g. the runner's core count).
+            heavy  ["self-hosted","local","heavy"]  1750m cpu / 3Gi memory
+            light  ["self-hosted","local"]          1000m cpu / 1.5Gi memory
+
+          requests == limits on both, i.e. Guaranteed QoS and a HARD cap —
+          there is no burst room above those numbers. `heavy` is the largest
+          tier these workflows target; do not ask for a bigger one here.
+
+          WHAT "auto" DERIVES, and why it is not simply the limit. ~1 GiB per
+          compile unit, MINUS a 1 GiB reserve for the runner agent and the
+          job's own step processes, capped by nproc, floored at 1. The reserve
+          is the load-bearing part: the agent shares the pod cgroup with rustc,
+          so budgeting the whole limit to compile units kills the AGENT, not
+          the build — the job is OOMKilled (exit 137) and surfaces as "the
+          self-hosted runner lost communication with the server" with no logs,
+          or as a bare `cancelled` once the pod restarts. On `heavy` that
+          yields 3 - 1 = 2, which independently reproduces ffreis-home-infra's
+          own measured pin (`gha_runner_cargo_build_jobs: 2`, recorded there as
+          "2 jobs peaks ~3 GiB vs ~5.4 GiB at the ~4-job default" — so 2 is
+          already AT the 3Gi cap and 4 was never survivable). On `light`,
+          floor(1.5) - 1 floors back to 1, unchanged.
+
+          HISTORY, because this input's documentation lying about its own
+          constraint is how the bug survived. It was once a constant "4",
+          described as memory-safe on a 4.5Gi pod; the tier was then resized
+          4.5Gi -> 2Gi -> 2.25Gi -> 2.5Gi -> 3Gi and the text was never
+          updated, so every caller inheriting the default was over-committed.
+          Deriving the value is what stops that recurring; stating the figure
+          and its source here is what stops the text going stale again.
+
+          A SMALLER CAP IS NOT ALWAYS THE ANSWER. Measured on
+          ffreis-rust-shared under a cgroup mirroring the pod (MemoryMax=2560M,
+          no swap, 2 CPU): peak anon 2541 MB at jobs=1 — 99% of the limit
+          before any parallelism. Memory is dominated by a per-crate baseline,
+          not linear in job count, so a crate whose baseline alone exceeds the
+          pod needs its job SPLIT (see the `packages` input on rust-lint.yml
+          and rust-test.yml, which runs one job per crate) rather than a lower
+          cap. Hosted-runner callers with real memory can pass a higher value
+          (e.g. the runner's core count).
         type: string
         default: "auto"
+      packages:
+        description: >-
+          Optional. SPLIT this job into one job per package instead of running
+          one test job over the whole workspace. This is the actual fix for a
+          workspace that does not fit the pod: each leg compiles roughly one
+          crate's worth, where `cargo-build-jobs` only caps how many compile
+          units run at once INSIDE a single whole-workspace job.
+
+          EMPTY (the default) is the pre-existing behaviour, unchanged: a
+          single job whose id is `test`, running `cargo test <cargo-args>
+          <test-args>` (or the nextest pair) over the whole workspace. The
+          split runs under a SEPARATE job id (`test-package`), so a caller
+          that does not set this input sees no new job, no renamed job and no
+          changed command — which matters because `test` is a required status
+          check on consumer repos.
+
+          Accepted spellings, all normalised to the same matrix:
+            JSON array    '["crate-a","crate-b"]'
+            comma list    'crate-a, crate-b'
+            newline list  a YAML block scalar, one name per line
+          Names must look like cargo package names (`[A-Za-z0-9_.-]+`).
+
+          Each leg runs the configured runner with `-p <package>` in front of
+          `cargo-args`, so leave `cargo-args` EMPTY when using this input —
+          `cargo-args` is the other package-selection slot (it is what
+          rust-affected.yml feeds) and setting both is contradictory. The plan
+          job emits a `::warning::` if it sees both, rather than failing: a
+          rollout safety net, not a policy gate.
+
+          The matrix is `fail-fast: false` on purpose: one crate's test
+          failure must not cancel its siblings, both because you want every
+          crate's failures from one run and because a cancelled sibling
+          surfaces as `cancelled` rather than as a failure, which this fleet
+          has repeatedly misread as flaky infra.
+
+          Caches are ISOLATED per leg — the rust-cache `key` carries the
+          package name. A shared key would restore the whole workspace's
+          `target/` into every leg, re-inflating both the memory and the 24Gi
+          ephemeral-storage pressure the split exists to remove, and
+          concurrent jobs sharing one cargo target dir have already corrupted
+          results in this fleet.
+
+          A non-empty value that parses to zero names is a HARD ERROR, never
+          a silent fall back to the whole-workspace run: the caller asked for
+          a split precisely because the workspace does not fit, so quietly
+          restoring the unsplit command would reintroduce the OOM it was
+          escaping.
+        required: false
+        type: string
+        default: ""
     secrets:
       PRIVATE_DEPS_TOKEN:
         description: "Token with read access to private git-dependency repos (e.g. FLEET_READ_TOKEN). Optional — omit if the workspace has no private cargo git deps."
         required: false
 
 jobs:
+  # Normalises `packages` into a matrix. Gated on `packages != ''` so the
+  # default path pays nothing for it — no extra job and no extra queue slot on
+  # a contended self-hosted tier for the callers who never opted in.
+  packages-plan:
+    if: ${{ inputs.packages != '' && (inputs.run_on_draft || vars.CI_RUN_ON_DRAFT == 'true' || github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    runs-on: ${{ github.event.repository.visibility == 'public' && fromJson('["ubuntu-latest"]') || fromJson(inputs.runner) }}
+    outputs:
+      packages: ${{ steps.plan.outputs.packages }}
+      count: ${{ steps.plan.outputs.count }}
+    steps:
+      - name: Normalise the packages input
+        id: plan
+        shell: bash
+        env:
+          PACKAGES: ${{ inputs.packages }}
+          CARGO_ARGS: ${{ inputs.cargo-args }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import sys
+
+
+          def die(msg):
+              print(f"::error::{msg}")
+              sys.exit(1)
+
+
+          raw = os.environ["PACKAGES"].strip()
+          # A leading `{` counts as JSON too, so a caller who hands us an
+          # object gets "must be an ARRAY" rather than the confusing
+          # "not a valid package name" from the list-splitting branch.
+          if raw.startswith(("[", "{")):
+              try:
+                  names = json.loads(raw)
+              except json.JSONDecodeError as exc:
+                  die(f"packages looks like JSON but does not parse: {exc}")
+              if not isinstance(names, list):
+                  die("packages JSON must be an ARRAY of package names")
+          else:
+              names = [p for p in re.split(r"[,\s]+", raw) if p]
+
+          names = [str(n).strip() for n in names]
+          # Must START with an alphanumeric or underscore. A bare charset
+          # class would accept `--workspace`, which then reaches the cargo
+          # command line as `-p --workspace` and is parsed as a FLAG, not
+          # as the package name the caller thinks they scoped to.
+          name_re = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*")
+          bad = [n for n in names if not name_re.fullmatch(n)]
+          if bad:
+              die(f"not valid cargo package names: {bad}")
+          if not names:
+              # Never fall back to the whole-workspace run — see the input's
+              # own documentation for why a silent fallback IS the bug.
+              die("packages was non-empty but parsed to zero package names")
+          dupes = sorted({n for n in names if names.count(n) > 1})
+          if dupes:
+              die(f"duplicate package names in packages: {dupes}")
+
+          # `cargo-args` is the OTHER package-selection slot (rust-affected.yml
+          # feeds it `--workspace` or `-p a -p b`). Setting both is
+          # contradictory. Warn rather than fail — a rollout safety net, not a
+          # policy gate (same choice as rust-mutation.yml's multi-crate
+          # warning).
+          cargo_args = os.environ.get("CARGO_ARGS", "")
+          if "--workspace" in cargo_args or re.search(r"(^|\s)-p(\s|=)", cargo_args):
+              print(
+                  "::warning::cargo-args carries its own package selection "
+                  f"({cargo_args!r}) while `packages` is set; the matrix's "
+                  "-p <package> is what scopes each leg — leave cargo-args empty"
+              )
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write("packages=" + json.dumps(names, separators=(",", ":")) + "\n")
+              fh.write(f"count={len(names)}\n")
+          print(f"split into {len(names)} per-package job(s): {' '.join(names)}")
+          PY
+
   test:
-    if: ${{ inputs.run_on_draft || vars.CI_RUN_ON_DRAFT == 'true' || github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    # `inputs.packages == ''` keeps this job EXACTLY as it was for every
+    # existing caller: none pass `packages`, so the added clause is always
+    # true and the gate is unchanged in effect. When a caller does opt in,
+    # this job steps aside and `test-package` runs instead — the two are
+    # mutually exclusive, never both.
+    if: ${{ inputs.packages == '' && (inputs.run_on_draft || vars.CI_RUN_ON_DRAFT == 'true' || github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
     # PUBLIC repos are FORCED onto GitHub-hosted runners, overriding `runner`.
     # A public repo accepts fork pull requests, and a self-hosted runner
     # executing fork-authored code would run arbitrary code on the homelab
@@ -234,9 +399,17 @@ jobs:
           else
             gib=$(( limit / 1073741824 ))
             [ "${gib}" -lt 1 ] && gib=1
-            jobs="${gib}"
+            # Reserve 1 GiB of the pod for the runner AGENT and the job's own
+            # step processes: they share this cgroup with rustc, so spending the
+            # WHOLE limit on compile units is what OOM-killed the agent (exit
+            # 137, surfacing as "lost communication") on the 3Gi heavy tier.
+            # 3Gi -> 2 reproduces ffreis-home-infra's own measured pin
+            # (gha_runner_cargo_build_jobs: 2 — "2 jobs peaks ~3 GiB vs ~5.4 GiB
+            # at the ~4-job default"). 1.5Gi light still floors to 1, unchanged.
+            jobs=$(( gib - 1 ))
+            [ "${jobs}" -lt 1 ] && jobs=1
             [ "${jobs}" -gt "${cpus}" ] && jobs="${cpus}"
-            why="${gib}GiB pod memory limit, ${cpus} cpu"
+            why="${gib}GiB pod limit - 1GiB agent reserve, ${cpus} cpu"
           fi
           echo "CARGO_BUILD_JOBS=${jobs}" >> "$GITHUB_ENV"
           echo "build parallelism: ${jobs} (${why})"
@@ -323,6 +496,241 @@ jobs:
           read -r -a cargo_args_arr <<< "${CARGO_ARGS:-}"
           read -r -a test_args_arr <<< "${TEST_ARGS:-}"
           cargo test "${cargo_args_arr[@]}" "${test_args_arr[@]}"
+
+      - name: sccache stats
+        if: ${{ inputs.sccache }}
+        run: sccache --show-stats
+
+  test-package:
+    if: ${{ inputs.packages != '' && (inputs.run_on_draft || vars.CI_RUN_ON_DRAFT == 'true' || github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
+    needs: packages-plan
+    strategy:
+      # One crate's failure must not cancel its siblings: you want every
+      # crate's errors from one run, and a cancelled sibling surfaces as
+      # `cancelled` rather than a failure — which this fleet has
+      # repeatedly misread as flaky infra.
+      fail-fast: false
+      matrix:
+        package: ${{ fromJson(needs.packages-plan.outputs.packages) }}
+    # PUBLIC repos are FORCED onto GitHub-hosted runners, overriding `runner`.
+    # A public repo accepts fork pull requests, and a self-hosted runner
+    # executing fork-authored code would run arbitrary code on the homelab
+    # cluster. This is the one case where honouring the caller's input would be
+    # wrong. Private repos keep whatever `runner` says (default: self-hosted).
+    # `github.event.repository.visibility` is populated for every trigger type
+    # these workflows support — same mechanism tf-sonar.yml already uses.
+    runs-on: ${{ github.event.repository.visibility == 'public' && fromJson('["ubuntu-latest"]') || fromJson(inputs.runner) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+      # Only used when `sccache` + `sccache-role-arn` are set, to mint an
+      # OIDC token for the S3 cache backend. No-op otherwise.
+      id-token: write
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+    env:
+      # Keep rustup's home OFF the image's overlay lower layer.
+      #
+      # The runner image bakes a toolchain at /usr/local/rustup. When CI asks
+      # for `stable` and upstream has moved, rustup tries to REPLACE the baked
+      # components, which means renaming a directory that lives in a lower
+      # overlayfs layer — and overlayfs answers EXDEV ("Invalid cross-device
+      # link") for exactly that. rustup then rolls back and exits 1:
+      #
+      #   error: could not rename 'component' file from
+      #   '/usr/local/rustup/toolchains/stable-.../share/doc/clippy'
+      #   to '/usr/local/rustup/tmp/...': Invalid cross-device link (os error 18)
+      #
+      # It looks intermittent because a pod that survives one successful
+      # update has copied-up and never fails again — only FRESH pods break. So
+      # it surfaces after any Deployment roll, and `toolchain: 1.88.0` (the
+      # MSRV, which matches what is baked) keeps passing while `stable` fails.
+      #
+      # Pointing RUSTUP_HOME at a writable path makes the install FRESH rather
+      # than a replace, so no lower-layer rename happens. Cost: a minimal
+      # toolchain download per pod (the action already passes
+      # `--profile minimal`). That is the deliberate trade — a predictable
+      # ~30-60s against a failure that is invisible until it isn't.
+      #
+      # The PATH MATTERS, and /tmp is the wrong one. In this fleet's runner
+      # pods /tmp is an emptyDir with `sizeLimit: 2Gi`, and a toolchain is
+      # ~2Gi — so a first attempt at this evicted the pod outright:
+      #   Evicted: Usage of EmptyDir volume "tmp" exceeds the limit "2Gi"
+      # which surfaces, again, as "the self-hosted runner lost communication".
+      # /home/runner/_work is the `work` emptyDir at 8Gi, the only mount with
+      # room. It is shared with the build's target/ dir, so a repo whose
+      # target/ approaches 6Gi will need that limit raised rather than this
+      # path changed.
+      #
+      # It also means CI no longer depends on the image's baked toolchain at
+      # all, which is the answer to "should the image bake one?": it should
+      # not, and this is what makes removing it safe.
+      RUSTUP_HOME: /home/runner/_work/_temp/rustup-ci
+      CARGO_PROFILE_DEV_DEBUG: ${{ inputs.cargo-profile-debug }}
+
+    steps:
+      # Resolve build parallelism BEFORE anything invokes cargo.
+      #
+      # This step is the single authority: a $GITHUB_ENV write beats both a
+      # job-level `env:` and the value inherited from the runner pod's
+      # container env (both measured on a real runner, 2026-08-21). So no
+      # `CARGO_BUILD_JOBS` is declared at job level any more — if this step
+      # were ever skipped, the pod's own value applies, which is a safe
+      # fallback rather than an unset variable.
+      #
+      # `auto` derives the cap from the pod's REAL cgroup memory limit, so a
+      # tier resize no longer silently over-commits every caller. That is the
+      # failure this replaces: the previous constant ("4", documented as
+      # memory-safe on a 4.5Gi pod) was never updated as the tier went
+      # 4.5Gi -> 2Gi -> 2.25Gi -> 2.5Gi -> 3Gi, and the symptom is not a build
+      # error — the runner agent shares the pod cgroup, so IT dies and the job
+      # surfaces as "the self-hosted runner lost communication" with no logs.
+      #
+      # ~1 GiB per compile unit is deliberately conservative and is a CEILING,
+      # not a target: measured peak on ffreis-rust-shared was 2541 MB at
+      # jobs=1 (99% of a 2560M limit), i.e. memory is dominated by a
+      # per-crate baseline rather than being linear in job count. No formula
+      # can rescue a crate whose baseline alone exceeds the pod — those pass
+      # an explicit number, which always wins over `auto`.
+      - name: Resolve build parallelism
+        # Pinned to the workspace root: this step runs BEFORE checkout, so the
+        # job's default working-directory (the caller's `working-directory`
+        # input, e.g. examples/hello) does not exist yet and bash cannot even
+        # start. Caught by CI on the first run of this change.
+        working-directory: ${{ github.workspace }}
+        env:
+          REQUESTED: ${{ inputs.cargo-build-jobs }}
+        run: |
+          set -euo pipefail
+          if [ "${REQUESTED}" != "auto" ]; then
+            echo "CARGO_BUILD_JOBS=${REQUESTED}" >> "$GITHUB_ENV"
+            echo "build parallelism: ${REQUESTED} (explicit caller override)"
+            exit 0
+          fi
+          # The path is a seam so this can be tested against fixtures — the
+          # workspace's "inject IO, never real IO in a tested path" rule.
+          # Production never sets it.
+          limit="$(cat "${CGROUP_MEMORY_MAX_PATH:-/sys/fs/cgroup/memory.max}" 2>/dev/null || echo max)"
+          cpus="$(nproc 2>/dev/null || echo 2)"
+          # "max" means unlimited (hosted runners, or cgroup v1 layouts where
+          # this file is absent). Never guess a big number from an unreadable
+          # limit — fall back to the value this input used to hardcode.
+          if [ "${limit}" = "max" ] || ! printf '%s' "${limit}" | grep -qE '^[0-9]+$'; then
+            jobs=2
+            why="cgroup limit unreadable or unlimited; safe fallback"
+          else
+            gib=$(( limit / 1073741824 ))
+            [ "${gib}" -lt 1 ] && gib=1
+            # Reserve 1 GiB of the pod for the runner AGENT and the job's own
+            # step processes: they share this cgroup with rustc, so spending the
+            # WHOLE limit on compile units is what OOM-killed the agent (exit
+            # 137, surfacing as "lost communication") on the 3Gi heavy tier.
+            # 3Gi -> 2 reproduces ffreis-home-infra's own measured pin
+            # (gha_runner_cargo_build_jobs: 2 — "2 jobs peaks ~3 GiB vs ~5.4 GiB
+            # at the ~4-job default"). 1.5Gi light still floors to 1, unchanged.
+            jobs=$(( gib - 1 ))
+            [ "${jobs}" -lt 1 ] && jobs=1
+            [ "${jobs}" -gt "${cpus}" ] && jobs="${cpus}"
+            why="${gib}GiB pod limit - 1GiB agent reserve, ${cpus} cpu"
+          fi
+          echo "CARGO_BUILD_JOBS=${jobs}" >> "$GITHUB_ENV"
+          echo "build parallelism: ${jobs} (${why})"
+
+      - uses: actions/checkout@0c366fd6a839edf440554fa01a7085ccba70ac98 # v4
+
+      - name: Configure git for private cargo dependencies
+        env:
+          PRIVATE_DEPS_TOKEN: ${{ secrets.PRIVATE_DEPS_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$PRIVATE_DEPS_TOKEN" ]]; then
+            git config --global url."https://x-access-token:${PRIVATE_DEPS_TOKEN}@github.com/".insteadOf "https://github.com/"
+            # cargo's libgit2 backend does not reliably honor url.insteadOf
+            # credential rewriting; force it to shell out to system git,
+            # which does.
+            echo "CARGO_NET_GIT_FETCH_WITH_CLI=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: ${{ inputs.toolchain }}
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@23869a5bd66c73db3c0ac40331f3206eb23791dc # v2.9.1
+        with:
+          workspaces: "${{ inputs.working-directory }} -> target"
+          # ISOLATE the cache per leg. A shared key would restore the
+          # whole workspace's target/ into every leg, re-inflating the
+          # memory and ephemeral-storage pressure this split exists to
+          # remove — and concurrent jobs sharing one cargo target dir
+          # have already corrupted results in this fleet.
+          key: ${{ matrix.package }}
+
+      - name: Configure AWS credentials for sccache
+        if: ${{ inputs.sccache && inputs.sccache-role-arn != '' }}
+        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6.2.0
+        with:
+          role-to-assume: ${{ inputs.sccache-role-arn }}
+          aws-region: ${{ inputs.sccache-region }}
+
+      - name: Set up sccache
+        if: ${{ inputs.sccache }}
+        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+
+      - name: Enable sccache
+        if: ${{ inputs.sccache }}
+        env:
+          SCCACHE_BUCKET: ${{ inputs.sccache-bucket }}
+          SCCACHE_REGION: ${{ inputs.sccache-region }}
+          SCCACHE_S3_KEY_PREFIX: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          {
+            echo "RUSTC_WRAPPER=sccache"
+            echo "CARGO_INCREMENTAL=0"
+            echo "SCCACHE_BUCKET=${SCCACHE_BUCKET}"
+            echo "SCCACHE_REGION=${SCCACHE_REGION}"
+            echo "SCCACHE_S3_KEY_PREFIX=${SCCACHE_S3_KEY_PREFIX}"
+          } >> "$GITHUB_ENV"
+
+      - name: Install cargo-nextest
+        if: ${{ inputs.nextest }}
+        uses: taiki-e/install-action@25435dc8dd3baed7417e0c96d3fe89013a5b2e09 # v2.81.3
+        with:
+          tool: cargo-nextest
+
+      - name: Run tests (nextest + doctests, single package)
+        if: ${{ inputs.nextest }}
+        env:
+          CARGO_ARGS: ${{ inputs.cargo-args }}
+          TEST_ARGS: ${{ inputs.test-args }}
+          PACKAGE: ${{ matrix.package }}
+        run: |
+          set -euo pipefail
+          read -r -a cargo_args_arr <<< "${CARGO_ARGS:-}"
+          read -r -a test_args_arr <<< "${TEST_ARGS:-}"
+          # `-p` FIRST, ahead of cargo-args, mirroring how rust-affected.yml's
+          # cargo-args sit ahead of a caller's own args. This is the whole
+          # point of the split: one crate's compile units, not the workspace's.
+          cargo nextest run -p "${PACKAGE}" "${cargo_args_arr[@]}" "${test_args_arr[@]}"
+          # nextest does not run doctests; run them separately so coverage of
+          # `///` examples is preserved.
+          cargo test --doc -p "${PACKAGE}" "${cargo_args_arr[@]}" "${test_args_arr[@]}"
+
+      - name: Run tests (cargo test, single package)
+        if: ${{ !inputs.nextest }}
+        env:
+          CARGO_ARGS: ${{ inputs.cargo-args }}
+          TEST_ARGS: ${{ inputs.test-args }}
+          PACKAGE: ${{ matrix.package }}
+        run: |
+          set -euo pipefail
+          read -r -a cargo_args_arr <<< "${CARGO_ARGS:-}"
+          read -r -a test_args_arr <<< "${TEST_ARGS:-}"
+          cargo test -p "${PACKAGE}" "${cargo_args_arr[@]}" "${test_args_arr[@]}"
 
       - name: sccache stats
         if: ${{ inputs.sccache }}

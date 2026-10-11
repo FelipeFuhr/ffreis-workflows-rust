@@ -62,21 +62,48 @@ on:
           limit at job start, so a tier resize cannot silently over-commit
           callers. Pass an explicit number to override (it always wins).
 
-          Was "4", documented as memory-safe on a 4.5Gi self-hosted pod. That
-          figure went stale — the heavy tier was resized 4.5Gi -> 2Gi -> 2.25Gi
-          -> 2.5Gi -> 3Gi and this comment was never updated, so callers
-          inheriting it were silently over-committed. Deriving it is what stops
-          that recurring. The symptom is not a build failure: the runner agent
-          shares the pod cgroup, so IT dies, surfacing as "the self-hosted
-          runner lost communication with the server" with no logs.
+          THE REAL POD, as of 2026-10-11. The authority is
+          platform/ffreis-home-infra's ansible role
+          `roles/gha_runner/defaults/main.yml`, key `gha_runner_deployments`:
 
-          Measured on ffreis-rust-shared under a cgroup mirroring the heavy pod
-          (MemoryMax=2560M, no swap, 2 CPU): peak anon 2541 MB at jobs=1 —
-          99% of the limit before any parallelism. Memory is therefore
-          dominated by a per-crate baseline, not linear in job count; a crate
-          whose baseline alone exceeds the pod needs a bigger tier, not a
-          smaller cap. Hosted-runner callers with real memory can pass a
-          higher value (e.g. the runner's core count).
+            heavy  ["self-hosted","local","heavy"]  1750m cpu / 3Gi memory
+            light  ["self-hosted","local"]          1000m cpu / 1.5Gi memory
+
+          requests == limits on both, i.e. Guaranteed QoS and a HARD cap —
+          there is no burst room above those numbers. `heavy` is the largest
+          tier these workflows target; do not ask for a bigger one here.
+
+          WHAT "auto" DERIVES, and why it is not simply the limit. ~1 GiB per
+          compile unit, MINUS a 1 GiB reserve for the runner agent and the
+          job's own step processes, capped by nproc, floored at 1. The reserve
+          is the load-bearing part: the agent shares the pod cgroup with rustc,
+          so budgeting the whole limit to compile units kills the AGENT, not
+          the build — the job is OOMKilled (exit 137) and surfaces as "the
+          self-hosted runner lost communication with the server" with no logs,
+          or as a bare `cancelled` once the pod restarts. On `heavy` that
+          yields 3 - 1 = 2, which independently reproduces ffreis-home-infra's
+          own measured pin (`gha_runner_cargo_build_jobs: 2`, recorded there as
+          "2 jobs peaks ~3 GiB vs ~5.4 GiB at the ~4-job default" — so 2 is
+          already AT the 3Gi cap and 4 was never survivable). On `light`,
+          floor(1.5) - 1 floors back to 1, unchanged.
+
+          HISTORY, because this input's documentation lying about its own
+          constraint is how the bug survived. It was once a constant "4",
+          described as memory-safe on a 4.5Gi pod; the tier was then resized
+          4.5Gi -> 2Gi -> 2.25Gi -> 2.5Gi -> 3Gi and the text was never
+          updated, so every caller inheriting the default was over-committed.
+          Deriving the value is what stops that recurring; stating the figure
+          and its source here is what stops the text going stale again.
+
+          A SMALLER CAP IS NOT ALWAYS THE ANSWER. Measured on
+          ffreis-rust-shared under a cgroup mirroring the pod (MemoryMax=2560M,
+          no swap, 2 CPU): peak anon 2541 MB at jobs=1 — 99% of the limit
+          before any parallelism. Memory is dominated by a per-crate baseline,
+          not linear in job count, so a crate whose baseline alone exceeds the
+          pod needs its job SPLIT (see the `packages` input on rust-lint.yml
+          and rust-test.yml, which runs one job per crate) rather than a lower
+          cap. Hosted-runner callers with real memory can pass a higher value
+          (e.g. the runner's core count).
         type: string
         default: "auto"
     secrets:
@@ -195,9 +222,17 @@ jobs:
           else
             gib=$(( limit / 1073741824 ))
             [ "${gib}" -lt 1 ] && gib=1
-            jobs="${gib}"
+            # Reserve 1 GiB of the pod for the runner AGENT and the job's own
+            # step processes: they share this cgroup with rustc, so spending the
+            # WHOLE limit on compile units is what OOM-killed the agent (exit
+            # 137, surfacing as "lost communication") on the 3Gi heavy tier.
+            # 3Gi -> 2 reproduces ffreis-home-infra's own measured pin
+            # (gha_runner_cargo_build_jobs: 2 — "2 jobs peaks ~3 GiB vs ~5.4 GiB
+            # at the ~4-job default"). 1.5Gi light still floors to 1, unchanged.
+            jobs=$(( gib - 1 ))
+            [ "${jobs}" -lt 1 ] && jobs=1
             [ "${jobs}" -gt "${cpus}" ] && jobs="${cpus}"
-            why="${gib}GiB pod memory limit, ${cpus} cpu"
+            why="${gib}GiB pod limit - 1GiB agent reserve, ${cpus} cpu"
           fi
           echo "CARGO_BUILD_JOBS=${jobs}" >> "$GITHUB_ENV"
           echo "build parallelism: ${jobs} (${why})"
