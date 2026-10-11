@@ -67,18 +67,62 @@ run_resolve() {
   [ "$(run_resolve 8 2147483648 4)" = "8" ]
 }
 
-@test "case 2: auto derives from the real cgroup limit" {
-  # 2 GiB is the live ci-light pod (measured on a real runner 2026-08-21),
-  # and must reproduce the hand-tuned "2" it replaces — otherwise this change
-  # is a silent fleet-wide retune rather than a refactor.
-  [ "$(run_resolve auto 2147483648 4)" = "2" ]
-  # 3 GiB is the heavy tier after this session's resize.
-  [ "$(run_resolve auto 3221225472 4)" = "3" ]
+@test "case 2: auto derives from the real cgroup limit, minus the agent reserve" {
+  # THE LIVE TIERS, from platform/ffreis-home-infra's ansible role
+  # roles/gha_runner/defaults/main.yml, key gha_runner_deployments (read
+  # 2026-10-11; requests == limits on both, so these are HARD caps):
+  #
+  #   heavy  1750m cpu / 3Gi   memory
+  #   light  1000m cpu / 1.5Gi memory
+  #
+  # The derivation budgets ~1 GiB per compile unit MINUS a 1 GiB reserve for
+  # the runner AGENT and the job's own step processes, which share the pod
+  # cgroup with rustc. Without that reserve the whole limit went to compile
+  # units and the AGENT was the thing OOM-killed — exit 137, surfacing as
+  # "lost communication" or a bare `cancelled`, with no logs.
+
+  # heavy, 3Gi: 3 - 1 = 2. This independently reproduces ffreis-home-infra's
+  # own measured pin (gha_runner_cargo_build_jobs: 2, recorded there as
+  # "2 jobs peaks ~3 GiB vs ~5.4 GiB at the ~4-job default"). Two separate
+  # derivations landing on the same number is the evidence that 2 is right —
+  # and that the previous 3 was over the 3Gi cap before the agent got a byte.
+  [ "$(run_resolve auto 3221225472 4)" = "2" ]
+
+  # light, 1.5Gi: floor(1.5) = 1, 1 - 1 = 0, floored back to 1. UNCHANGED by
+  # the reserve, which is why this is a targeted fix and not a fleet-wide
+  # retune — `light` carries nearly every job in this fleet.
+  [ "$(run_resolve auto 1610612736 4)" = "1" ]
+
+  # A hypothetical 2Gi pod: 2 - 1 = 1. No live tier is 2Gi any more (light
+  # was 2Gi until the 2026-09-23 resize), kept as a boundary case.
+  [ "$(run_resolve auto 2147483648 4)" = "1" ]
+}
+
+@test "case 2b: the reserve leaves room for the agent at every live tier" {
+  # The property the reserve exists to guarantee, asserted as a property
+  # rather than as three magic numbers: the compile-unit budget must always
+  # leave at least 1 GiB of the pod for the agent. A future retune that
+  # spends the whole limit again fails here even if it updates case 2's
+  # expected values to match itself.
+  local limit gib jobs
+  for gib in 2 3 4 5 8; do
+    limit=$((gib * 1073741824))
+    jobs="$(run_resolve auto "$limit" 16)"
+    [ "$jobs" -ge 1 ] || {
+      echo "${gib}GiB pod derived jobs=$jobs; cargo rejects --jobs 0"
+      false
+    }
+    [ "$jobs" -le "$((gib - 1))" ] || {
+      echo "${gib}GiB pod derived jobs=$jobs, which budgets the whole pod"
+      echo "to compile units and leaves nothing for the runner agent"
+      false
+    }
+  done
 }
 
 @test "case 3: auto never exceeds the cpu count" {
-  # An 8Gi xl pod on a 4-core box: more compile units than cores buys
-  # nothing and costs memory.
+  # An 8Gi pod on a 4-core box: more compile units than cores buys nothing
+  # and costs memory. (8 - 1 = 7, so the cpu cap is what binds here.)
   [ "$(run_resolve auto 8589934592 4)" = "4" ]
   [ "$(run_resolve auto 8589934592 2)" = "2" ]
 }

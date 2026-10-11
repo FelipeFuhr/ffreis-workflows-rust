@@ -22,8 +22,8 @@ Replace `<sha>` with the commit SHA corresponding to the desired release tag. Av
 | Workflow file | Purpose | Key inputs |
 |---|---|---|
 | `rust-fmt.yml` | `cargo fmt --all -- --check` | `toolchain`, `working-directory` |
-| `rust-lint.yml` | Clippy with `-- -D warnings` | `toolchain`, `working-directory`, `clippy-args` |
-| `rust-test.yml` | `cargo test` | `toolchain`, `working-directory`, `test-args`, `timeout-minutes` |
+| `rust-lint.yml` | Clippy with `-- -D warnings` | `toolchain`, `working-directory`, `clippy-args`, `packages` (JSON/comma/newline list — one job per crate, see [Splitting a job per package](#splitting-a-job-per-package)) |
+| `rust-test.yml` | `cargo test` | `toolchain`, `working-directory`, `test-args`, `timeout-minutes`, `packages` (JSON/comma/newline list — one job per crate, see [Splitting a job per package](#splitting-a-job-per-package)) |
 | `rust-build.yml` | Matrix build across Rust versions and runner legs | `rust-versions` (JSON), `os-list` (JSON **array of legs** — see [Matrix build](#matrix-build)), `working-directory`, `build-args` |
 | `rust-security.yml` | `cargo-audit` CVE scan (schedule weekly in caller) | `toolchain`, `working-directory`, `ignore-advisories` |
 | `rust-coverage.yml` | `cargo-llvm-cov` + Codecov upload (unit tests) | `toolchain`, `working-directory`, `coverage-args`, `coverage-threshold`, `codecov-flags`; secret `CODECOV_TOKEN` |
@@ -77,6 +77,58 @@ jobs:
       test-args: "--all-features"
       timeout-minutes: 20
 ```
+
+### Splitting a job per package
+
+`rust-lint.yml` and `rust-test.yml` accept an optional `packages` input. When
+it is non-empty, the job runs as a **matrix with one leg per package**, each
+invoking cargo with `-p <package>`, instead of one job over the whole
+workspace. Each leg then compiles roughly one crate's worth.
+
+This is the fix for a multi-crate workspace that does not fit the runner pod.
+It is a different lever from `cargo-build-jobs`, which only caps how many
+compile units run at once *inside* a single whole-workspace job — on the
+`heavy` tier (1750m cpu / 3Gi memory, hard-capped) the workspace's peak is set
+by its largest compilation unit, so capping parallelism alone cannot rescue a
+workspace whose aggregate baseline exceeds the pod.
+
+```yaml
+  lint:
+    uses: ffreis/ffreis-platform-workflows-rust/.github/workflows/rust-lint.yml@<sha> # v1.x.y
+    with:
+      working-directory: app
+      packages: '["api", "domain", "storage"]'
+      runner: '["self-hosted","local","heavy"]'
+```
+
+Three spellings are accepted and normalise to the same matrix:
+
+| Spelling | Example |
+|---|---|
+| JSON array | `packages: '["api","domain"]'` |
+| comma list | `packages: "api, domain"` |
+| newline list | a YAML block scalar, one name per line |
+
+Notes:
+
+- **Empty (the default) is the pre-existing behaviour, unchanged** — a single
+  job whose id is still `lint` / `test`, running the same whole-workspace
+  command. The split runs under a separate job id (`lint-package` /
+  `test-package`), so callers that do not set `packages` see no new job, no
+  renamed job and no changed command. That matters because `lint` and `test`
+  are required status checks on consumer repos.
+- The matrix is `fail-fast: false`: one crate's failure does not cancel its
+  siblings.
+- Each leg gets an **isolated** cargo cache (the `rust-cache` key carries the
+  package name), so a leg restores roughly one crate's `target/` rather than
+  the whole workspace's.
+- On `rust-test.yml`, leave `cargo-args` **empty** when using `packages` —
+  `cargo-args` is the other package-selection slot (it is what
+  `rust-affected.yml` feeds). Setting both emits a `::warning::`.
+- A non-empty `packages` that parses to zero names is a **hard error**, never
+  a silent fall back to the whole-workspace run.
+- `heavy` is the largest runner tier these workflows target. Split the job
+  rather than asking for a bigger tier.
 
 ### Matrix build
 

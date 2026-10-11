@@ -102,6 +102,25 @@ jobs:
       # Public repo: self-hosted structurally unavailable — pin explicitly.
       runner: '["ubuntu-latest"]'
 
+  # Dogfoods the `packages` per-package matrix on a PR, alongside the `lint`
+  # job above which dogfoods the DEFAULT whole-workspace path. Both paths run
+  # on every PR, so neither can regress unnoticed: the pair is the live proof
+  # that adding `packages` left the default alone.
+  #
+  # The JSON spelling here and the bare-name spelling on test-per-package
+  # below are deliberate — between them they exercise both branches of the
+  # normaliser at runtime, not just in bats.
+  lint-per-package:
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/rust-lint.yml
+    with:
+      working-directory: examples/hello
+      packages: '["hello"]'
+      # Public repo: self-hosted structurally unavailable — pin explicitly.
+      runner: '["ubuntu-latest"]'
+
   test:
     if: ${{ !github.event.pull_request.draft }}
     permissions:
@@ -110,6 +129,20 @@ jobs:
     uses: ./.github/workflows/rust-test.yml
     with:
       working-directory: examples/hello
+      # Public repo: self-hosted structurally unavailable — pin explicitly.
+      runner: '["ubuntu-latest"]'
+
+  test-per-package:
+    if: ${{ !github.event.pull_request.draft }}
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/rust-test.yml
+    with:
+      working-directory: examples/hello
+      # Bare-name spelling (not JSON), so the list-splitting branch of the
+      # normaliser is exercised for real too.
+      packages: hello
       # Public repo: self-hosted structurally unavailable — pin explicitly.
       runner: '["ubuntu-latest"]'
 
