@@ -472,3 +472,70 @@ paths:
     baseline-allowlisted adapter, and a `clock-lint:allow` line — none of
     which may be counted. Do not "fix" it, for the same reason
     `examples/partial`'s `shrink_to_fit_len()` stays untested.
+
+19. **`rust-mutation.yml`'s aggregate scores a SHARD UNION, and that union has
+    to be proven complete before it is scored — which is the only reason every
+    successful shard leaves a receipt.**
+
+    `mutation-aggregate`'s scorer sums outcome files with
+    `downloaded/mutants-report-shard-*/<file>` under `shopt -s nullglob`, so a
+    shard whose artifact never arrived contributes 0 caught and 0 missed
+    SILENTLY. The score becomes a ratio over whatever subset did arrive and the
+    run reports a pass on a partial measurement; with every artifact missing it
+    takes the `total == 0` branch and reports a clean 100 — item 4b's bug one
+    level up. Demonstrated on a fixture: 4 planned shards, shard 2 (holding 10
+    surviving mutants) absent, scorer alone reports **100% ≥ 80%, exit 0**;
+    the same fixture complete is **37%**.
+
+    **`Fail fast if any shard did not succeed` does not catch it.** That step
+    reads `needs.mutation.result`, the MATRIX AGGREGATE, which reads `success`
+    as long as no leg failed — an upload that failed, an artifact that expired,
+    or a leg skipped individually all leave it at `success`. `Download all
+    shard reports` is deliberately `continue-on-error: true`
+    (`download-artifact` errors when a `pattern:` matches nothing), so a
+    download that failed outright is invisible there too. `Assert every shard
+    reported` is the only place either shape surfaces.
+
+    **The receipt is what makes the assertion possible, not a nicety.** Two
+    cases were indistinguishable from the artifact side: a shard that ran and
+    legitimately had nothing to mutate (no `mutants.out/`, so
+    `if-no-files-found: ignore` creates NO artifact — item 4b's and item 17's
+    `--in-diff` cases, plus `steps.diff.outputs.result == 'empty'` skipping
+    `Run mutation testing` outright), versus a shard whose artifact went
+    missing. Both land as zero directories. `Leave a shard receipt so the
+    aggregate can count reporters` writes `mutants.out/shard-receipt.txt` on
+    every successful shard, so "all N reported and collectively had nothing to
+    mutate" arrives as N directories holding only receipts and still passes via
+    the scorer's `total == 0` branch, while "fewer than N reported" fails.
+    **Zero shard artifacts in total must stay a legitimate pass** — do not
+    "simplify" this by having the assertion tolerate a zero count instead,
+    which waves through exactly the worst case (every artifact missing, clean
+    100).
+
+    Two orderings are load-bearing. The receipt step runs AFTER `Guard against
+    a silent harness failure`, never before — creating `mutants.out/` ahead of
+    that guard masks its missing-directory and missing-outcome-file checks. And
+    the assertion runs BEFORE the scorer, or it is decoration. The receipt
+    filename must stay outside `caught/missed/unviable/timeout.txt` or every
+    shard inflates the counts by one. The receipt step carries no `if:`, so a
+    shard that actually failed leaves none and is caught twice over.
+
+    Missing indices are a hard failure; an index OUTSIDE `0..total-1` is only a
+    `::warning::` — extra evidence cannot hide a surviving mutant, and it is
+    structurally impossible while the matrix comes from `shard-plan`'s
+    `seq 0 total-1`. The check is per-index rather than a bare count comparison
+    so one missing shard plus one stray directory cannot cancel out to the
+    right total.
+
+    **`self-test.yml` and `ci.yml` exercise only the passing side.** GitHub
+    forbids `continue-on-error` on a job that calls a reusable workflow
+    (actionlint rejects it), so neither can run a mutation job with a
+    deliberately-deleted shard artifact without reddening itself — the same
+    constraint recorded for `assert-clock-lint-can-fail` in item 18.
+    `tests/mutation_shard_completeness.bats` is the proof the gate can fail: it
+    runs both steps extracted from the YAML by step name and asserts the
+    missing-shard, all-missing, absent-`downloaded/`, unknown-`total` and
+    stray-plus-missing shapes, alongside the legitimate "all reported, nothing
+    to mutate" pass assembled end to end from the receipt step's own output.
+    Renaming either step breaks the extraction loudly rather than silently
+    testing nothing.
