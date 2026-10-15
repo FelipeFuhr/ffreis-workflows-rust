@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.3.1](https://github.com/FelipeFuhr/ffreis-workflows-rust/compare/v3.3.0...v3.3.1) (2026-10-15)
+
+
+### Bug Fixes
+
+* **mutation:** fail the aggregate when a shard report is missing ([#126](https://github.com/FelipeFuhr/ffreis-workflows-rust/issues/126)) ([f46f185](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/f46f185bdebf200e6b65df45ddfd5a22abe3e0c3))
+
 ## [3.3.0](https://github.com/FelipeFuhr/ffreis-workflows-rust/compare/v3.2.0...v3.3.0) (2026-10-11)
 
 
