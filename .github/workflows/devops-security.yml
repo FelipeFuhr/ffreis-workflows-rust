@@ -76,7 +76,7 @@ jobs:
       contents: read
       actions: read
       security-events: write
-    uses: FelipeFuhr/ffreis-workflows-general/.github/workflows/general-scan-grype-fs.yml@c05b308fe568045ac1c8086436cca5011b809454 # v2.0.0
+    uses: FelipeFuhr/ffreis-workflows-general/.github/workflows/general-scan-grype-fs.yml@a2e4fbc521fa86b0e4a5712492b851a0ba3119e7 # main@2026-10-19 (grype verdict fix #178; not yet released)
     with:
       path: "."
       fail-on-vuln: ${{ github.event_name != 'pull_request' }}
@@ -95,7 +95,7 @@ jobs:
       contents: read
       actions: read
       security-events: write
-    uses: FelipeFuhr/ffreis-workflows-general/.github/workflows/general-osv-scanner.yml@c05b308fe568045ac1c8086436cca5011b809454 # v2.0.0
+    uses: FelipeFuhr/ffreis-workflows-general/.github/workflows/general-osv-scanner.yml@3c4c9012ea1e8edfda316cf0d87052b33e5fa3fe # v2.1.0
     with:
       working-directory: "."
       upload-sarif: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false }}
