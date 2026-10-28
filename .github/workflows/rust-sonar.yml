@@ -27,6 +27,44 @@ on:
         description: "Name of a coverage artifact uploaded by rust-coverage.yml (skips regeneration)"
         type: string
         default: ""
+      sources:
+        description: >-
+          Value for `-Dsonar.sources`. Default '' = AUTO; see PRECEDENCE.
+
+          WHAT THIS FIXES. This workflow hardcoded `-Dsonar.sources=src` onto
+          the scanner command line. Scanner CLI args OVERRIDE
+          sonar-project.properties, so that one key in a consumer repo's own
+          properties file was INERT — it could not win no matter what it said.
+          A Cargo workspace with crates under `crates/` was scanned as if only
+          `src` existed, and a repo whose code lives under `lambdas/` was
+          pointed at a directory that does not exist in its project base dir.
+
+          PRECEDENCE, highest first:
+            1. a non-empty value here -> `-Dsonar.sources=<value>` on the CLI.
+               An explicit caller override always wins, properties file
+               included.
+            2. empty (the default) AND the checked-out
+               sonar-project.properties defines `sonar.sources` -> NO
+               `-Dsonar.sources` is passed at all, so the FILE decides. This
+               is the fix.
+            3. empty (the default) and no such key in the file ->
+               `-Dsonar.sources=src`, byte-identical to the previous
+               hardcoded value.
+
+          The file is read from `working-directory`, which is also what is
+          handed to the scanner as `projectBaseDir` — i.e. the very same
+          sonar-project.properties the scanner itself loads, not a different
+          one at the repo root.
+
+          CASE 2 IS A DELIBERATE BEHAVIOUR CHANGE and it is the ONLY one.
+          It affects exactly those callers that already ship a
+          `sonar.sources` line — they authored it and have never had it
+          honoured; honouring it is the point. A caller that wants the old
+          hardcoded scope back regardless of its own file passes
+          `sources: src` explicitly (case 1).
+        required: false
+        type: string
+        default: ""
       run_on_draft:
         description: "Run even on draft PRs (default: skip on draft to save CI minutes)"
         required: false
@@ -333,6 +371,7 @@ jobs:
           ORGANIZATION_VAR: ${{ vars.SONAR_ORGANIZATION }}
           OWNER: ${{ github.repository_owner }}
           REPO: ${{ github.event.repository.name }}
+          SOURCES_INPUT: ${{ inputs.sources }}
         run: |
           set -euo pipefail
           PROJECT_KEY="${PROJECT_KEY_INPUT:-}"
@@ -349,6 +388,24 @@ jobs:
           fi
           [ -z "$ORGANIZATION" ] && ORGANIZATION="$OWNER"
 
+          # sonar.sources precedence — see the `sources` input for the full
+          # rationale. The load-bearing branch is the middle one: when the
+          # consumer's own properties file sets the key we must pass NOTHING,
+          # because any -Dsonar.sources on the CLI overrides the file, which
+          # is the defect being fixed here.
+          SOURCES_ARG=""
+          if [[ -n "${SOURCES_INPUT:-}" ]]; then
+            SOURCES_ARG="-Dsonar.sources=${SOURCES_INPUT}"
+            SOURCES_WHY="sources input (explicit caller override)"
+          elif [[ -f sonar-project.properties ]] &&
+            grep -qE '^[[:space:]]*sonar[.]sources[[:space:]]*=' sonar-project.properties; then
+            SOURCES_WHY="sonar-project.properties — no CLI override passed, the file decides"
+          else
+            SOURCES_ARG="-Dsonar.sources=src"
+            SOURCES_WHY="default (unchanged from this workflow's previous hardcoded value)"
+          fi
+          echo "sonar.sources: ${SOURCES_ARG:-<left to the properties file>} (${SOURCES_WHY})"
+
           EXTRA=""
           [ -n "$PROJECT_KEY" ] && EXTRA="$EXTRA -Dsonar.projectKey=$PROJECT_KEY"
           [ -n "$ORGANIZATION" ] && EXTRA="$EXTRA -Dsonar.organization=$ORGANIZATION"
@@ -356,6 +413,7 @@ jobs:
             echo "args=$EXTRA"
             echo "project_key=$PROJECT_KEY"
             echo "organization=$ORGANIZATION"
+            echo "sources_arg=$SOURCES_ARG"
           } >> "$GITHUB_OUTPUT"
 
       - name: Sonar scan (with local fallback)
@@ -366,7 +424,11 @@ jobs:
           project-key: ${{ steps.sonar-args.outputs.project_key }}
           organization: ${{ steps.sonar-args.outputs.organization }}
           sonar-token: ${{ secrets.SONAR_TOKEN }}
+          # -Dsonar.sources is resolved by the `Build Sonar extra args` step
+          # above, which emits an EMPTY string when the consumer's own
+          # sonar-project.properties sets the key — a CLI arg would override
+          # the file. See the `sources` input for the precedence.
           extra-sonar-args: >
             -Dsonar.rust.lcov.reportPaths=lcov.info
-            -Dsonar.sources=src
+            ${{ steps.sonar-args.outputs.sources_arg }}
           notify-role-to-assume: ${{ secrets.CI_NOTIFY_ROLE_ARN }}
