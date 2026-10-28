@@ -246,10 +246,53 @@ on:
           default timeout — so its gate never once completed. Scoped to a PR's
           own diff the same repo finished in 109s. Also the better signal: it
           asks "are these new lines tested", not "is the whole crate perfect".
-          Ignored on non-pull_request events, which have no base to diff.
+          On a non-pull_request event there is no PR base to diff against, so
+          this is ignored UNLESS the caller also passes `base-ref` (below).
         required: false
         type: boolean
         default: false
+      base-ref:
+        description: >-
+          Ref to diff against when `in-diff` is true on a NON-pull_request
+          event (workflow_dispatch, schedule, push). A branch ('main'), a tag
+          ('v1.2.3') or a commit SHA. Default '' = today's behaviour exactly.
+
+          WHAT THIS FIXES. `cargo mutants --in-diff` needs a base to diff
+          against. On `pull_request` that base comes from
+          `github.event.pull_request.base.ref`; on every other event there was
+          none, so `in-diff: true` was SILENTLY IGNORED and the sweep ran
+          UNSCOPED. That is not cosmetic: on the crate the `in-diff` input
+          above measures, scoped is 109s and unscoped is ~123 min against an
+          85-minute `timeout-minutes` — so a dispatched run asking for the
+          cheap gate instead got one that cannot finish. `ffreis-flowgraph-
+          engine` and every repo scaffolded from the rust-lambda / rust-service
+          templates carry both `workflow_dispatch:` and `in-diff: true`, so
+          they hit this on every manual dispatch.
+
+          PRECEDENCE, and it is deliberately NOT caller-overridable on a PR:
+            1. `pull_request` event -> ALWAYS the PR's own base ref. This
+               input is ignored there, so a caller that sets both cannot
+               accidentally re-scope its PR gate against something else.
+            2. any other event, `base-ref` non-empty -> diff against it.
+            3. any other event, `base-ref` empty (the default) -> no diff is
+               computed and the sweep is unscoped: byte-identical to today,
+               so no existing caller changes behaviour.
+
+          AN UNRESOLVABLE `base-ref` IS A HARD ERROR, never a fallback to an
+          unscoped sweep. A silent fallback is precisely the bug above, and it
+          fails in the expensive direction: the caller asked for a 109s run
+          and would get one that blows the timeout. The step best-effort
+          FETCHES the ref first (so a shallow or single-ref checkout is not
+          itself the failure) and only then fails, naming the ref.
+
+          `shard-count` is NOT collapsed to 1 on this path, unlike the
+          `pull_request` path (see `shard-count`). A PR diff is bounded by one
+          review's worth of change; a dispatched diff against an arbitrary ref
+          — a release tag many merges back, say — is not, so the caller's
+          requested shard count is honoured rather than silently overridden.
+        required: false
+        type: string
+        default: ''
       shard-count:
         description: >-
           Number of matrix shards to split mutation testing across
@@ -1146,7 +1189,7 @@ jobs:
       # full-history checkout.
       - name: Compute PR diff for --in-diff
         id: diff
-        if: ${{ inputs.in-diff && github.event_name == 'pull_request' }}
+        if: ${{ inputs.in-diff && (github.event_name == 'pull_request' || inputs.base-ref != '') }}
         # working-directory + `git diff --relative` is load-bearing, not tidying.
         # cargo-mutants runs INSIDE inputs.working-directory and reads the diff's
         # paths as relative to there. Computing the diff at the repo root emits
@@ -1161,20 +1204,51 @@ jobs:
         # a change outside the workspace has no mutants in it.
         working-directory: ${{ inputs.working-directory }}
         env:
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          # pull_request ALWAYS wins — see the `base-ref` input's precedence
+          # note. A caller that sets both cannot re-scope its own PR gate.
+          BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref || inputs.base-ref }}
+          # Which knob supplied BASE_REF, so the error below names the right
+          # one instead of guessing.
+          BASE_REF_SOURCE: ${{ github.event_name == 'pull_request' && 'the pull_request base' || 'the base-ref input' }}
           DIFF_PATH: ${{ runner.temp }}/pr.diff
         run: |
           set -euo pipefail
 
-          base=""
-          for candidate in "origin/${BASE_REF}" "${BASE_REF}"; do
-            if git rev-parse --verify --quiet "$candidate" >/dev/null 2>&1; then
-              base="$candidate"
-              break
-            fi
-          done
+          # Same candidate order as before: a branch resolves as
+          # origin/<ref>, while a tag or a raw commit SHA resolves bare.
+          resolve_base() {
+            local candidate
+            for candidate in "origin/${BASE_REF}" "${BASE_REF}"; do
+              if git rev-parse --verify --quiet "$candidate" >/dev/null 2>&1; then
+                printf '%s' "$candidate"
+                return 0
+              fi
+            done
+            return 1
+          }
+
+          base="$(resolve_base || true)"
+
           if [[ -z "$base" ]]; then
-            echo "::error title=Mutation diff error::cannot resolve base ref '${BASE_REF}'. Ensure the checkout used fetch-depth: 0."
+            # BEST-EFFORT FETCH, deliberately NOT A GATE. `base-ref` may name
+            # a ref this checkout never fetched. Arm 1 covers a branch, arm 2
+            # a tag or a raw commit SHA. Each ends in `|| true` ON PURPOSE:
+            # under `set -e` a failed fetch would otherwise abort the step
+            # before the real gate below ever runs, turning a clear "cannot
+            # resolve" into an unexplained step failure. Do not fold these
+            # into one `a && b || c` chain — the gate must stay separately
+            # able to return non-zero.
+            git fetch --no-tags --quiet origin \
+              "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}" 2>/dev/null || true
+            git fetch --tags --quiet origin "${BASE_REF}" 2>/dev/null || true
+            base="$(resolve_base || true)"
+          fi
+
+          # THE GATE. Reachable, and able to fail: never fall back to an
+          # UNSCOPED whole-crate sweep, which is the bug `base-ref` exists to
+          # fix (109s asked for, ~123 min delivered, 85 min timeout).
+          if [[ -z "$base" ]]; then
+            echo "::error title=Mutation diff error::cannot resolve base ref '${BASE_REF}' (from ${BASE_REF_SOURCE}), even after trying to fetch it. Refusing to fall back to an UNSCOPED whole-crate sweep. On a pull_request, ensure the checkout used fetch-depth: 0; for base-ref, pass a branch, tag or commit SHA that exists on the remote."
             exit 1
           fi
 
@@ -1197,10 +1271,10 @@ jobs:
 
           if [[ ! -s "$DIFF_PATH" ]]; then
             echo "result=empty" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Mutation skipped::This PR changes no Rust source under '${{ inputs.working-directory }}', so there is nothing to mutate."
+            echo "::notice title=Mutation skipped::No Rust source under '${{ inputs.working-directory }}' changed between ${base} and HEAD, so there is nothing to mutate."
           else
             echo "result=ok" >> "$GITHUB_OUTPUT"
-            echo "Mutating only lines changed by this PR ($(grep -c '^+++' "$DIFF_PATH") changed .rs file(s))."
+            echo "Mutating only lines changed since ${base} ($(grep -c '^+++' "$DIFF_PATH") changed .rs file(s))."
           fi
 
       - name: Run mutation testing
