@@ -908,6 +908,85 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: ${{ inputs.cargo-profile-debug }}
 
     steps:
+      # Keep cargo-mutants' per-job scratch trees OFF the `tmp` volume.
+      #
+      # cargo-mutants copies the source tree -- and, with its default
+      # `copy_target`, target/ along with it -- into one scratch directory
+      # PER PARALLEL JOB and builds there. Those land under TMPDIR, i.e.
+      # /tmp. In this fleet's runner pods /tmp is an emptyDir with a
+      # per-tier `sizeLimit` that NO tier raises above 10Gi, so a real
+      # crate's run evicts the pod outright:
+      #
+      #   Found 442 mutants to test
+      #   ok      Unmutated baseline in 285s build + 4s test
+      #   ERROR interrupted
+      #   ERROR scenario execution internal error err=interrupted phase=Build
+      #   ##[error]The runner has received a shutdown signal.
+      #
+      # ...while the actual cause appears only in the kubelet event, never
+      # in the job log:
+      #
+      #   Evicted: Usage of EmptyDir volume "tmp" exceeds the limit "10Gi"
+      #
+      # Measured 2026-11-04 on ffreis-urbs-admin run 41738911842: 13m13s
+      # in, ZERO mutants tested. So the gate measured NOTHING, and the
+      # runner's own message blames the network -- the same misreading
+      # item 13 cost multiple sessions.
+      #
+      # This is the SAME overlay/volume trap `RUSTUP_HOME` below already
+      # dodges, and it takes the same fix: point it at the `work` emptyDir,
+      # which every tier sizes larger than its tmp (work 8/14/20/28Gi vs
+      # tmp 2/8/10/10Gi for light/heavy/large/xl). READ THE VOLUME
+      # sizeLimits, not just `resources`, before concluding a job fits a
+      # tier -- they are a fourth axis and they are invisible in
+      # `resources.requests`.
+      #
+      # This buys a bigger budget rather than removing the limit: `work` is
+      # shared with target/. `in-place: true` is the input that removes the
+      # copies altogether, and is the better answer for any caller whose
+      # suite is safe against a live checkout.
+      #
+      # Written to $GITHUB_ENV rather than declared as a job-level `env:`
+      # for two independent reasons. RUNNER_TEMP is only readable from a
+      # step, so this stays correct on the hosted runners the `runs-on`
+      # expression above routes public repos to (where RUSTUP_HOME's
+      # hardcoded /home/runner/_work path is merely harmless, not right).
+      # And the variable cannot come into existence before the mkdir that
+      # backs it -- so no step, including the node-based actions that read
+      # os.tmpdir(), can ever observe a TMPDIR that is not there. A
+      # job-level `env:` would have exactly that window.
+      #
+      # `mutation-warm` deliberately does NOT get this: its one build is
+      # an ordinary `cargo test --no-run` with no tree copy, the same shape
+      # every other rust-*.yml job runs on these tiers without eviction.
+      - name: Redirect TMPDIR off the tmp volume
+        # Runs before checkout, so the job's default working-directory
+        # (inputs.working-directory) does not exist yet and bash cannot
+        # start in it -- same reason "Resolve build parallelism" below
+        # pins the workspace root.
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -uo pipefail
+          tmp="${RUNNER_TEMP:-/home/runner/_work/_temp}/mutants-tmp"
+          # Fail LOUDLY rather than leaving TMPDIR pointing at nothing: an
+          # unwritten TMPDIR falls straight back to /tmp, which is the
+          # eviction this step exists to prevent, and it would fall back
+          # silently.
+          #
+          # Deliberately an explicit `if`, and deliberately NOT `set -e`
+          # with a bare `mkdir`: under `mkdir -p X && [ -w X ] || { ... }`
+          # a plain `set -e` abort on mkdir skips the ::error annotation
+          # entirely, so the one failure mode most likely to happen is the
+          # one that would report nothing. Both halves are checked here by
+          # the same branch, which is also why this suite can mutate either
+          # half and see it fail.
+          if ! mkdir -p "${tmp}" 2>/dev/null || [ ! -d "${tmp}" ] || [ ! -w "${tmp}" ]; then
+            echo "::error title=TMPDIR redirect failed::could not create a writable ${tmp}. cargo-mutants' scratch trees would fall back to /tmp, whose per-tier emptyDir sizeLimit (<=10Gi on every tier) evicts the pod mid-run."
+            exit 1
+          fi
+          echo "TMPDIR=${tmp}" >> "$GITHUB_ENV"
+          echo "TMPDIR -> ${tmp}"
+
       # Resolve build parallelism BEFORE anything invokes cargo.
       #
       # This step is the single authority: a $GITHUB_ENV write beats both a
