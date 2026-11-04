@@ -57,9 +57,29 @@ STUB
   chmod +x "$d/bin/cargo"
 
   : >"$log"
-  PATH="$d/bin:$PATH" \
-  CARGO_LOG="$log" \
-  MUTANTS_ARGS="$mutants_args" \
+  # STRIP ANY EXPORTED `cargo` SHELL FUNCTION BEFORE THE STUB CAN BE BYPASSED.
+  #
+  # A bash FUNCTION wins over a PATH lookup, so prepending "$d/bin" is not
+  # enough on its own. This workspace exports one: the cache-tier setup
+  # defines `cargo()` to redirect CARGO_TARGET_DIR and marks it exported, so
+  # every `bash` started from such a shell inherits it through the
+  # environment variable `BASH_FUNC_cargo%%` and re-defines the function --
+  # which then shadows the stub entirely.
+  #
+  # The consequence was not a visible failure. The extracted step called the
+  # REAL cargo, which in this fleet resolves to a wrapper that calls
+  # `buildguard run`, so the suite sat waiting for a host-wide build slot:
+  # `make test` hung with no output and no TAP line, before even the first
+  # case (measured 2026-11-04). On a GitHub runner there is no such function,
+  # so CI passed throughout and the defect was invisible exactly where it was
+  # introduced -- locally.
+  #
+  # `env -u` removes the inherited definition for the child only, leaving the
+  # caller's own shell untouched.
+  env -u 'BASH_FUNC_cargo%%' \
+    PATH="$d/bin:$PATH" \
+    CARGO_LOG="$log" \
+    MUTANTS_ARGS="$mutants_args" \
     bash "$script" >"$d/stdout" 2>&1 || return 1
 
   cat "$log"

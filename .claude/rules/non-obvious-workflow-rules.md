@@ -539,3 +539,74 @@ paths:
     to mutate" pass assembled end to end from the receipt step's own output.
     Renaming either step breaks the extraction loudly rather than silently
     testing nothing.
+
+20. **`rust-mutation.yml` redirects `TMPDIR` off the pod's `tmp` volume, and
+    the per-tier emptyDir `sizeLimit`s are a FOURTH axis that is invisible in
+    `resources.requests`.** cargo-mutants copies the source tree — and, via
+    its default `copy_target`, `target/` with it — into one scratch directory
+    PER PARALLEL JOB and builds there. Those land under `TMPDIR`, i.e. `/tmp`,
+    which in this fleet's runner pods is an emptyDir whose cap NO tier raises
+    above 10Gi. The pod is Evicted mid-run and the job reports only:
+
+    ```
+    Found 442 mutants to test
+    ok      Unmutated baseline in 285s build + 4s test
+    ERROR interrupted
+    ##[error]The runner has received a shutdown signal.
+    ```
+
+    The cause is visible only in the kubelet event — `Evicted: Usage of
+    EmptyDir volume "tmp" exceeds the limit "10Gi"` — never in the job log, so
+    it reads as the same "runner lost communication" network failure items 9
+    and 13 were each misdiagnosed as. Measured 2026-11-04 on
+    `ffreis-urbs-admin` run 41738911842: 13m13s elapsed, **zero mutants
+    tested**, and item 4b's "absence of evidence is not evidence of success"
+    guard is the only reason it did not report a pass.
+
+    **The volume caps, which do not follow from the resource requests:**
+
+    | tier | cpu | memory | ephemeral-storage | `work` | **`tmp`** |
+    | --- | --- | --- | --- | --- | --- |
+    | light | 1 | 1536Mi | 12Gi | 8Gi | **2Gi** |
+    | heavy | 1750m | 3Gi | 24Gi | 14Gi | **8Gi** |
+    | large | 2 | 5Gi | 32Gi | 20Gi | **10Gi** |
+    | xl | 4 | 8Gi | 40Gi | 28Gi | **10Gi** |
+
+    Read the volume `sizeLimit`s, not just `resources`, before concluding a job
+    fits a tier. Note `large` dominates `heavy` on every axis including these
+    two — but **no tier gives cargo-mutants more than 10Gi of `/tmp`, `xl`
+    included**, so moving up a tier was never going to fix this.
+
+    The fix is the same one `RUSTUP_HOME` already applies for the same reason
+    (that env block's comment derives it in full): point it at the `work`
+    emptyDir, the only mount with room. It is a `$GITHUB_ENV` write in a
+    `Redirect TMPDIR off the tmp volume` step that is **the FIRST step of the
+    `mutation` job**, not a job-level `env:`, for two independent reasons:
+    `RUNNER_TEMP` is only readable from a step, so the value stays correct on
+    the hosted runners the `runs-on` expression routes public repos to; and the
+    variable cannot exist before the `mkdir` that backs it, so no step — the
+    node-based actions that read `os.tmpdir()` included — can observe a
+    `TMPDIR` that is not there. A job-level `env:` has exactly that window.
+
+    **This buys a bigger budget; it does not remove the limit** — `work` is
+    shared with `target/`. `in-place: true` is what removes the tree copies
+    altogether and is the better answer for any caller whose suite is safe
+    against a live checkout; prefer it where that holds.
+
+    `mutation-warm` deliberately does NOT get the redirect: its one build is
+    an ordinary `cargo test --no-run` with no tree copy, the shape every other
+    `rust-*.yml` job runs on these tiers without eviction. That choice is
+    asserted, not just stated — `tests/mutation_tmpdir.bats` case 6 fails if
+    the step is copied there, so a future need to add it prompts updating the
+    reasoning rather than quietly forking a second copy that then drifts the
+    way item 9's thirteen copies of the parallelism script could.
+
+    Two wrong turns not to repeat. **`mutants-args: -p <crate>`** is the right
+    advice for the multi-crate workspaces the workflow warns about, and does
+    nothing here: `ffreis-urbs-admin` is single-crate (`member_count=0`, the
+    step logs `exit 0 # single-crate repo`) — check `cargo metadata` before
+    quoting that warning. And **removing duplication is not removing
+    complexity**: on the same PR, extracting three repeated
+    audit-persist-respond blocks left a `rust:S3776` finding at 20 unchanged,
+    because cognitive complexity counts BRANCHES, not statements. Re-measure
+    before reporting a fix.

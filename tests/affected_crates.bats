@@ -40,7 +40,13 @@ printf '{"workspace_root":"%s","packages":[{"name":"root-crate","manifest_path":
 EOF
   chmod +x "$repo/bin/cargo"
   : >"$repo/output"
-  (cd "$repo" && PATH="$repo/bin:$PATH" GITHUB_OUTPUT="$repo/output" WORKDIR=. EVENT_NAME=pull_request \
+  # Same exported-function hazard as tests/mutation_warm_features.bats -- see
+  # that file's long comment for the full derivation. This suite's stub happens
+  # to be reached today because `cargo metadata` is not one of the verbs the
+  # wrapper intercepts, but that is a property of the WRAPPER, not of this
+  # test, and it would change silently if the wrapper's verb list grew.
+  (cd "$repo" && env -u 'BASH_FUNC_cargo%%' \
+    PATH="$repo/bin:$PATH" GITHUB_OUTPUT="$repo/output" WORKDIR=. EVENT_NAME=pull_request \
     PR_BASE_SHA="$base" PUSH_BEFORE_SHA='' PUSH_BUILDS_WORKSPACE=true \
     bash "$BATS_FILE_TMPDIR/detect.sh")
   cat "$repo/output"
