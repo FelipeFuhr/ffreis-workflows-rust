@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.3.2](https://github.com/FelipeFuhr/ffreis-workflows-rust/compare/v3.3.1...v3.3.2) (2026-11-04)
+
+
+### Bug Fixes
+
+* **make:** move pin comments off the assignment line ([#128](https://github.com/FelipeFuhr/ffreis-workflows-rust/issues/128)) ([1b7002e](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/1b7002ed2f64a1975ab185d73db873e12fa4b32f))
+* **mutation:** redirect TMPDIR off the pod's tmp volume, and make the cargo stubs reachable ([#132](https://github.com/FelipeFuhr/ffreis-workflows-rust/issues/132)) ([5cf8950](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/5cf8950546519491b07fdbd20eb455e7b1919d12))
+
 ## [3.3.1](https://github.com/FelipeFuhr/ffreis-workflows-rust/compare/v3.3.0...v3.3.1) (2026-10-15)
 
 
