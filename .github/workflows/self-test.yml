@@ -463,6 +463,16 @@ jobs:
       runner: '["ubuntu-latest"]'
     secrets:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      # Passed even though this repo is PUBLIC and so never reaches the
+      # self-hosted server: what this exercises is the CALLER CONTRACT, not
+      # the scan. Passing a secret the callee does not declare is a silent
+      # `startup_failure` with zero jobs created, so a typo in
+      # rust-sonar.yml's `SONARQUBE_LOCAL_TOKEN:` id fails here instead of on
+      # the first private consumer. Resolves to empty when unset — exactly
+      # the optional path. NOTE this job is gated on
+      # `vars.SONAR_ENABLED == 'true'`, so it only provides that coverage
+      # where that variable is set.
+      SONARQUBE_LOCAL_TOKEN: ${{ secrets.SONARQUBE_LOCAL_TOKEN }}
 
   container:
     permissions:

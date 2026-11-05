@@ -610,3 +610,42 @@ paths:
     audit-persist-respond blocks left a `rust:S3776` finding at 20 unchanged,
     because cognitive complexity counts BRANCHES, not statements. Re-measure
     before reporting a fix.
+
+21. **An undeclared `secrets:`/`with:` key on a `workflow_call` is a
+    `startup_failure`, and `tests/caller_callee_secret_contract.bats` is what
+    catches it now.** Zero jobs are created, there is no log to read, and the
+    check renders as though it is still queuing rather than as a failure —
+    which is why this class has cost multiple sessions and keeps recurring
+    (items 4a and 9a each record an instance).
+
+    The suite walks every LOCAL `uses: ./...` call in `self-test.yml` and
+    asserts the keys it passes are a subset of what the callee declares. Local
+    calls only: a remote `uses:` cannot be resolved offline and guessing would
+    make the check lie. `secrets: inherit` is a string rather than a mapping
+    and declares nothing, so it is skipped rather than mis-parsed.
+
+    **Two traps in the checker itself, both of which made it pass vacuously
+    before being fixed:**
+
+    - PyYAML parses an unquoted `on:` key as the **boolean `True`**, so a
+      reusable workflow's trigger block is under `True`, not `"on"`. Looking
+      only for the string finds nothing and declares everything valid.
+    - `"./.github/workflows/x.yml".lstrip("./")` yields
+      `"github/workflows/x.yml"` — `lstrip` strips every leading `.` and `/`
+      CHARACTER, not the prefix. Use `removeprefix("./")`, and `resolve()`
+      the workflows dir before taking `.parent`, since the path handed in
+      contains `..`.
+
+    Case 3 feeds it a known-bad fixture and case 4 asserts the inspected-call-
+    site count is non-zero, because "no problems found" and "nothing was
+    looked at" are otherwise identical outputs — same rule as item 4b.
+
+    This matters most where the self-test cannot provide the coverage by
+    running: `self-test.yml`'s `sonar` job is gated on
+    `vars.SONAR_ENABLED == 'true'`, which is **not set on this repo**, so that
+    job never executes here and could never catch a typo in `rust-sonar.yml`'s
+    secret ids dynamically. Note the fleet asymmetry while you are here —
+    `rust-sonar.yml` is opt-IN (`== 'true'`) whereas
+    `ffreis-workflows-terraform`'s `tf-sonar.yml` is opt-OUT
+    (`!= 'false'`), so terraform repos get sonar by default and Rust repos do
+    not.
