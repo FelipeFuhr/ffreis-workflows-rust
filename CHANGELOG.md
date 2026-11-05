@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.3.3](https://github.com/FelipeFuhr/ffreis-workflows-rust/compare/v3.3.2...v3.3.3) (2026-11-05)
+
+
+### Bug Fixes
+
+* **sonar:** pass the self-hosted token through rust-sonar ([#133](https://github.com/FelipeFuhr/ffreis-workflows-rust/issues/133)) ([9c63c54](https://github.com/FelipeFuhr/ffreis-workflows-rust/commit/9c63c54a3e718040c0b0f192efd6e363cff9596f))
+
 ## [3.3.2](https://github.com/FelipeFuhr/ffreis-workflows-rust/compare/v3.3.1...v3.3.2) (2026-11-04)
 
 
